@@ -35,21 +35,22 @@ for P in "$@"; do
     -F has_issues=false \
     -F has_wiki=false \
     -F has_projects=false \
+    -F has_pull_requests=false \
+    -F pull_request_creation_policy=collaborators_only \
     -F allow_forking=false \
     --jq '"  discussions=\(.has_discussions) issues=\(.has_issues) wiki=\(.has_wiki) projects=\(.has_projects) forking=\(.allow_forking)"'
 
-  # Pull requests cannot be disabled through any GitHub setting. The practical
-  # equivalent is leaving the repo empty: with no default branch there is
-  # nothing to open a pull request against. Do not add a README here.
+  # Pull requests are disabled outright via has_pull_requests. Keeping the repo
+  # empty is belt and braces, not the mechanism.
   if gh api "repos/$ORG/$P/branches" --jq 'length' 2>/dev/null | grep -qv '^0$'; then
-    echo "  WARN: repo has branches - pull requests are possible. Keep it empty."
+    echo "  note: repo has branches; PRs are disabled by setting regardless"
   fi
 
   # Verify, do not assume. A PATCH that silently no-ops leaves a repo that looks
   # provisioned and is not.
-  state=$(gh api "repos/$ORG/$P" --jq '[.has_discussions, .has_issues, .has_wiki, .has_projects] | @csv')
-  if [[ "$state" != "true,false,false,false" ]]; then
-    echo "  FATAL: settings did not apply (discussions,issues,wiki,projects = $state)" >&2
+  state=$(gh api "repos/$ORG/$P" --jq '[.has_discussions, .has_issues, .has_wiki, .has_projects, .has_pull_requests] | @csv')
+  if [[ "$state" != "true,false,false,false,false" ]]; then
+    echo "  FATAL: settings did not apply (discussions,issues,wiki,projects,pull_requests = $state)" >&2
     fail=1
     continue
   fi

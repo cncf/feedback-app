@@ -40,10 +40,14 @@ click Install.
 | Wiki | **off** | unowned documentation surface, drifts immediately |
 | Projects | **off** | planning belongs in the project's own org |
 | Forking | **off** | nothing to fork; a fork only creates a confusing lookalike |
-| Pull requests | *cannot be disabled* | keep the repo **empty** — with no default branch there is nothing to open a PR against |
+| Pull requests | **off** | `has_pull_requests: false` on `PATCH /repos/{owner}/{repo}`; there is no code here to review |
 
-Pull requests have no GitHub setting. Emptiness is the control. **Do not add a
-README to a feedback repo**; it creates a branch and with it a PR surface.
+Pull requests **can** be disabled outright — `has_pull_requests: false`, with
+`pull_request_creation_policy: collaborators_only` as a second line of defence.
+Keeping the repo empty is belt and braces, not the mechanism.
+
+Still, **do not add a README to a feedback repo.** Put the welcome in a pinned
+discussion, where the audience actually is.
 
 ## Onboarding
 
@@ -175,7 +179,8 @@ is idempotent and fails loudly when settings do not apply:
 
 | Rationalization | Reality |
 |---|---|
-| "I'll add a README so the repo looks welcoming." | It creates a branch and a PR surface. Put the welcome in a pinned discussion. |
+| "I'll add a README so the repo looks welcoming." | Put the welcome in a pinned discussion, where the audience is. |
+| "PRs can't be turned off on GitHub." | They can: `has_pull_requests: false`. Check the current schema rather than trusting recall — this field is newer than most people's mental model. |
 | "Leave issues on, people might file useful ones." | They will file support requests in a repo with no code and no maintainers watching. |
 | "The category is called Project Feedback so it must be the feedback one." | Name is not format. Verify in settings or lose the moderation guarantee. |
 | "I'll grant repo access in the UI, it's quicker." | CLOWarden reconciles it away. Use the PR. |
@@ -191,8 +196,8 @@ is idempotent and fails loudly when settings do not apply:
 
 ## Verification
 
-- [ ] `provision-project.sh` exits 0 and reports `true,false,false,false`
-- [ ] Repo has no branches
+- [ ] `provision-project.sh` exits 0 and reports `true,false,false,false,false`
+- [ ] `has_pull_requests` is false
 - [ ] Target category confirmed announcement-format in settings
 - [ ] Access recorded in `access-control.yaml` via merged PR
 - [ ] Source App installed by the project, not by staff on their behalf
