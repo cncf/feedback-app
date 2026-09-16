@@ -134,10 +134,39 @@ scopes to the current repo.
 
 So "must be an App" is a statement about the **token**, not about running a
 hosted service. Actions-as-carrier with App-as-identity is a real option and is
-usually the cheapest one — no server, no webhook endpoint, no hosting. What you
-give up is inbound webhooks: an Action cannot receive `discussion` events for a
-repo it doesn't live in, so hub-side drift detection needs a poll or a webhook
-relay. That tradeoff — not the credential — is what should decide the carrier.
+usually the cheapest one — no server, no webhook endpoint, no hosting.
+
+### The two-workflow pattern
+
+Actions do **not** categorically forfeit inbound events. A workflow triggers on
+events in **its own** repository, so put one at each end:
+
+| Workflow | Lives in | Triggers on | Writes to |
+|---|---|---|---|
+| Outbound | source repo | `on: issues` (`labeled`, `edited`, …) | hub repo, via App token scoped to the hub |
+| Inbound | hub repo | `on: discussion`, `on: discussion_comment` | source repos, via App token scoped to them |
+
+Each mints its own installation token with `actions/create-github-app-token`, so
+neither needs a server. That covers both directions of drift.
+
+**What the pattern does not cover**, and what a poller or webhook relay is
+actually for:
+
+- **`closed` and `reopened`.** The Actions trigger list for `discussion` is the
+  13-action subset — it omits exactly these two (see Documentation Hazards). A
+  hub workflow cannot trigger on a discussion being closed or reopened, even in
+  its own repo. If closing a discussion must propagate, that path needs a poll
+  or a relay.
+- **Cross-repo delivery to a source-local workflow.** A workflow in the source
+  repo never sees the hub's `discussion` events. Inbound handling must live in
+  the hub, not be bolted onto the outbound workflow.
+- **Latency floor.** Workflow dispatch is slower than a webhook handler, and a
+  poll is slower still.
+
+So the honest carrier comparison is: two workflows (no hosting, no `closed`
+/`reopened`), a hosted webhook service (all 15 actions, needs hosting), or a
+poller (everything, slowest). That tradeoff — not the credential — is what
+should decide the carrier.
 
 ## Permission Mapping Is Undocumented
 
