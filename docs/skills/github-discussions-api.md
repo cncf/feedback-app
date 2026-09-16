@@ -8,13 +8,14 @@ description: >-
 metadata:
   context7-sources:
     - /github/docs
+    - /actions/create-github-app-token
 ---
 
 # GitHub Discussions API
 
 Discussions are not issues with a different name. They are GraphQL-only, their
-documentation contradicts itself in two places, and the obvious automation
-carrier cannot reach across repositories. Each of those costs a redesign if
+documentation contradicts itself in two places, and the default workflow
+credential cannot reach across repositories. Each of those costs a redesign if
 discovered late.
 
 ## When to Use
@@ -49,8 +50,9 @@ discovered late.
    ```bash
    gh api graphql -f query='{repository(owner:"O",name:"R"){id discussionCategories(first:25){nodes{id name isAnswerable}}}}'
    ```
-4. **Pick the carrier against the cross-repo constraint** (see below) before
-   designing anything else. It is the decision everything else hangs on.
+4. **Settle identity and carrier separately** (see below). The credential
+   question and the runtime question are independent; answering one does not
+   answer the other.
 5. **Prove write paths by execution, one mutation at a time.** A mutation that
    exists in the schema is not a mutation your credential may call.
 6. **Clean up test content.** `deleteDiscussion` exists; use it. Verify with
@@ -92,10 +94,50 @@ discussion created in *another* repository fails with
 `Resource not accessible by integration` no matter what permissions the workflow
 declares.
 
-So any project-repo → hub-repo topology needs a **GitHub App installation**.
-GitHub would also accept a PAT; projects that forbid PATs therefore have exactly
-one admissible carrier, and the carrier "decision" is made for them. Establish
-this before debating App vs Action — it may not be a debate.
+So any project-repo → hub-repo topology needs a credential that is **not**
+`GITHUB_TOKEN`. GitHub offers two: a **GitHub App installation token** or a PAT.
+Where PATs are forbidden, that resolves to App installation — but read the next
+section before concluding anything about runtime.
+
+### Identity is not carrier
+
+These are two independent choices, and collapsing them produces a wrong design:
+
+| Axis | Options |
+|---|---|
+| **Identity** — who the API calls run as | App installation token, PAT, user token |
+| **Carrier** — what runtime executes the sync | Hosted webhook service, GitHub Actions workflow, scheduled poller |
+
+A no-PAT rule constrains **identity only**. It does not select a carrier,
+because a plain Actions workflow can mint an App installation token — including
+one scoped to a *different* owner — via the official
+[`actions/create-github-app-token`](https://github.com/actions/create-github-app-token):
+
+```yaml
+- uses: actions/create-github-app-token@v3
+  id: app-token
+  with:
+    client-id: ${{ vars.APP_CLIENT_ID }}
+    private-key: ${{ secrets.APP_PRIVATE_KEY }}
+    owner: target-org          # omit `repositories` for all repos in the installation
+    repositories: |
+      hub-repo
+- run: gh api graphql -f query='...'
+  env:
+    GH_TOKEN: ${{ steps.app-token.outputs.token }}
+```
+
+The action calls `POST /app/installations/{installation_id}/access_tokens`,
+returns a token valid for one hour, and revokes it in its `post` step. `owner`
+without `repositories` scopes to every repo in that installation; omitting both
+scopes to the current repo.
+
+So "must be an App" is a statement about the **token**, not about running a
+hosted service. Actions-as-carrier with App-as-identity is a real option and is
+usually the cheapest one — no server, no webhook endpoint, no hosting. What you
+give up is inbound webhooks: an Action cannot receive `discussion` events for a
+repo it doesn't live in, so hub-side drift detection needs a poll or a webhook
+relay. That tradeoff — not the credential — is what should decide the carrier.
 
 ## Permission Mapping Is Undocumented
 
@@ -140,7 +182,8 @@ in a project with a no-PAT rule it wrongly reads as a policy violation. Check
 | "The GraphQL guide shows the Discussion type — that's authoritative." | It is hand-written and stale. It omits three interfaces, including `Labelable`. Use the schema-generated reference. |
 | "The permission is documented as covering labels, so `discussions: write` is enough." | No GraphQL permission map exists. Documented prose is not an authorization test. Run it. |
 | "I proved create-and-label works, so the label path is proven." | You proved it for that credential and that one mutation. Remove and clear are separate, and an App is not a user. |
-| "I'll use an Action with `GITHUB_TOKEN`, it's simpler." | It cannot write to another repository. Verify the topology before choosing the carrier. |
+| "I'll use an Action with `GITHUB_TOKEN`, it's simpler." | `GITHUB_TOKEN` cannot write to another repository — but the Action still can, using an App installation token from `actions/create-github-app-token`. Reject the credential, not the carrier. |
+| "PATs are banned, so it has to be a hosted App." | Banning PATs settles *identity*, not *runtime*. A workflow can mint an App installation token scoped to another owner. Decide the carrier on webhooks and latency instead. |
 | "The workflow-events page lists the discussion actions." | It lists the Actions-trigger subset. Webhook consumers need the webhooks reference. |
 
 ## Red Flags
@@ -149,6 +192,8 @@ in a project with a no-PAT rule it wrongly reads as a policy violation. Check
   with no executed result behind it
 - The words "proven" or "verified" attached to a mutation nobody ran
 - A design that reaches for a PAT to solve a cross-repo write
+- Treating a credential rule as if it selected a runtime — "no PATs, therefore a
+  hosted App"
 - Copying an API shape out of a prose guide without introspecting
 - Test discussions, issues, or labels left behind in a real repository
 - A webhook action list with 13 entries
@@ -160,7 +205,8 @@ in a project with a no-PAT rule it wrongly reads as a policy violation. Check
 - [ ] Each write path was executed, and the credential type used is stated
 - [ ] App-token authorization tested separately from user-token, or explicitly
       marked unverified
-- [ ] Carrier choice checked against the cross-repo constraint
+- [ ] Identity and carrier decided separately, each on its own evidence
+- [ ] Cross-repo writes use an App installation token, whatever the runtime
 - [ ] Doc claims cite schema-generated references, not hand-written guides
 - [ ] Test content deleted; `discussions{totalCount}` confirms it
 
