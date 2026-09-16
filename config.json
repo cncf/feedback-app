@@ -1,17 +1,17 @@
 {
   "feedbackLabel": "feedback",
   "hub": {
-    "repo": "cncf/cncf-feedback",
-    "repositoryId": "R_kgDOUd6KpQ",
-    "categoryName": "Announcements",
-    "categoryId": "DIC_kwDOUd6Kpc4DFwg7",
+    "repo": "cncf-projects/cert-manager",
+    "repositoryId": "R_kgDOMwRpvg",
+    "categoryName": "Project Feedback",
+    "categoryId": "DIC_kwDOMwRpvs4CmnZX",
+    "botLogin": null
+  },
+  "source": {
     "botLogin": null
   },
   "sources": [
     "cncf/feedback-app"
   ],
-  "source": {
-    "botLogin": null
-  },
   "_note": "botLogin must be set to '<app-slug>[bot]' before running with App tokens; installation tokens cannot resolve viewer."
 }
