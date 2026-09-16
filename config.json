@@ -3,8 +3,8 @@
   "hub": {
     "repo": "cncf-projects/cert-manager",
     "repositoryId": "R_kgDOMwRpvg",
-    "categoryName": "Project Feedback",
-    "categoryId": "DIC_kwDOMwRpvs4CmnZX",
+    "categoryName": "Announcements",
+    "categoryId": "DIC_kwDOMwRpvs4CmnZW",
     "botLogin": null
   },
   "source": {
@@ -13,5 +13,6 @@
   "sources": [
     "cncf/feedback-app"
   ],
-  "_note": "botLogin must be set to '<app-slug>[bot]' before running with App tokens; installation tokens cannot resolve viewer."
+  "_note": "botLogin must be set to '<app-slug>[bot]' before running with App tokens; installation tokens cannot resolve viewer.",
+  "_categoryNote": "Decision 9 requires an ANNOUNCEMENT-format category so only maintainers and the App can start threads while anyone may reply. The GraphQL API does not expose category format (only isAnswerable), so format cannot be verified programmatically. 'Announcements' is announcement-format by default; 'Project Feedback' (DIC_kwDOMwRpvs4CmnZX) is the better name but its format is UNVERIFIED. Check it in repo settings and, if it is announcement-format, switch categoryId to it."
 }
