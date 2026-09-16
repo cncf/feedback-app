@@ -268,6 +268,43 @@ PR or an admin bypass; and the probe leaves runs and test discussions behind.
 Use a scratch repo you can delete, and if you must use a real one, remove the
 workflow through a PR and delete the test content.
 
+## App Permissions: Executed Results
+
+GitHub publishes no permission map for GraphQL, so these were settled by running
+them with an installation token holding **only** `discussions: write` +
+`metadata: read` — no `issues` permission at all:
+
+| Mutation | Result |
+|---|---|
+| `createDiscussion` in an **announcement-format** category | **allowed** |
+| `createDiscussion` in a hand-created category | allowed |
+| `addLabelsToLabelable` | **allowed** |
+| `removeLabelsFromLabelable` | **allowed** |
+| `clearLabelsFromLabelable` | **allowed** |
+| `addDiscussionComment` | allowed |
+| `updateDiscussion` | allowed |
+| `closeDiscussion(reason: OUTDATED)` | allowed |
+| `reopenDiscussion` | allowed |
+
+Three things this contradicts:
+
+1. **`discussions: write` carries label writes on discussions.** `issues: write`
+   is not required, even though labels are a shared repository resource.
+2. **An App can start threads in an announcement-format category.** The docs
+   phrase that restriction in terms of *users* with maintain or admin
+   permissions; an installation is not a user and is permitted anyway.
+3. **Installation tokens can resolve `viewer`.** It returns the `[bot]` form.
+
+### The two-spellings trap
+
+`viewer.login` returns `my-app[bot]`; `author.login` on the same App's content
+returns `my-app`. Comparing them directly makes a sync reject its own
+discussions and create a duplicate on every run. Normalise before comparing —
+strip a trailing `[bot]`, casefold, then compare.
+
+Every user-token test passes this by accident, because both spellings match.
+Only a live App run exposes it.
+
 ## Permission Mapping Is Undocumented
 
 GitHub publishes **no permission map for the GraphQL API**. Official guidance is
