@@ -255,7 +255,7 @@ Documented by GitHub's own `github-community-projects` org:
 > "**`GITHUB_TOKEN` only works when the discussion is created in the same repository the workflow runs in.** If `repository-id` points at a different repository, the GraphQL call returns `Resource not accessible by integration` regardless of the declared permissions. To post a discussion in another repository, use one of: …"
 > — https://github.com/github-community-projects/contributors (README)
 
-**⇒ The proposal's topology (project repo → central feedback org) mandates a GitHub App installation or a PAT on the target org. A plain Actions workflow in the project's repo cannot do it.** (App permission scope and cross-org installation policy are GitHubPlatformCaps' territory; flagging the operational fact here because it determines whether this is an Action or an App — it must be an App.)
+**⇒ The proposal's topology (project repo → central feedback org) mandates a GitHub App installation on the target org. A plain Actions workflow in the project's repo cannot do it.** GitHub also permits a PAT here, but **this project forbids PATs** — automation uses the GitHub App token pattern — so the App is not merely preferred, it is the only admissible option. (App permission scope and cross-org installation policy are GitHubPlatformCaps' territory; flagging the operational fact here because it settles whether this is an Action or an App — it must be an App.)
 
 ### What exists that you could reuse
 
