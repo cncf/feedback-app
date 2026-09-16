@@ -197,3 +197,34 @@ A repo `cncf/tab-private` surfaced in authenticated code search (README: "# CNCF
 - Exact date `cncf/tag-contributor-strategy` was archived.
 - Identity/involvement of "Mitch Conners" (proposal's spelling) — not checked.
 - Non-GitHub venues (CNCF Slack, mailing lists, KubeCon recordings) were out of reach and were not searched.
+
+---
+
+## Correction — 2026-09-16: the feedback org exists
+
+The negative findings above ("no feedback org", "no PoC in cert-manager") are **wrong**. This research searched for orgs named `cncf-feedback` and `cncf-projects-feedback`. The actual name is **`cncf-projects`**.
+
+Verified by direct GitHub API inspection, 2026-09-16:
+
+| Artifact | State |
+|---|---|
+| Org [`cncf-projects`](https://github.com/cncf-projects) | Exists. Description: *"PoC Org for Project Feedback"*. Created **2024-07-26**. Public, 3 repos. |
+| [`cncf-projects/cert-manager`](https://github.com/cncf-projects/cert-manager) | Created **2024-09-11**. Public. **Discussions enabled**, categories `Announcements`, `Ideas`, **`Project Feedback`**. Repository empty. **0 discussions.** |
+| [`cncf-projects/guidelines`](https://github.com/cncf-projects/guidelines) | Exists, empty. Matches the Stage 1 task "Create guidelines and rules for participating in project feedback org". |
+| [`cncf-projects/org-admin`](https://github.com/cncf-projects/org-admin) | Access control via [CLOWarden](https://github.com/cncf/clowarden). `access-control.yaml` declares org `cncf-projects`, team `cncf-project-ops`, maintainer `mrbobbytables` (Bob Killen). |
+
+### What this changes
+
+**The revival does not start from an empty page.** The org, its access-control mechanism, the discussion category structure, and one project feedback repo already exist and are reusable.
+
+**Onboarding has a precedent.** Access to `cncf-projects` repos is governed declaratively by CLOWarden, which reads `access-control.yaml` as desired state and reconciles drift — including revoking access granted by other means. Provisioning and permission-granting for new project feedback repos should extend this rather than invent a parallel mechanism.
+
+**The timeline sharpens.** The org (2024-07-26) predates the proposal's last changelog entry (2024-09-05); the cert-manager repo (2024-09-11) postdates it. The PoC was being actively built right up to the point the effort stalled, which is consistent with the TAB workstream being parked in December 2025.
+
+### What still stands
+
+**Nothing shipped and no feedback was ever collected.** Zero discussions in the one project repo that has Discussions enabled; `guidelines` never written; no sync app; no issue templates found in any participating project. This remains a revival of a parked effort, not a duplicate of a working system.
+
+### Method note
+
+The original searches were name-guesses over a small candidate set. The lesson is recorded for future negative findings: an org-name probe is only as good as the guessed names, and a negative result should be stated as "these names do not exist" rather than "no such org exists". The correct discovery path was asking a human who was there.
