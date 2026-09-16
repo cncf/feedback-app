@@ -22,6 +22,18 @@ Default five-role vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `
 
 Single-context: `CONTEXT.md` at the root, ADRs under `docs/adr/`. See `docs/agents/domain.md`.
 
+### Project skills
+
+Read the matching project skill **before** any global skill or training-data recall.
+
+| Area | Skill |
+|---|---|
+| Discussions API, cross-repo writes, carrier choice, GitHub doc conflicts | `docs/skills/github-discussions-api.md` |
+
 ## Source discipline
 
 No GitHub API shape from memory. Context7 (`/github/docs`) or the live GraphQL schema, every time, cited at the claim. The design must respect GitHub's documented rate limits, App permission model, and Acceptable Use Policies — this is well-documented territory and there is no excuse for guessing.
+
+Two official GitHub pages actively mislead on this subject, and a mutation existing in the schema does not mean your credential may call it. Both traps are documented in `docs/skills/github-discussions-api.md`; read it before designing anything that writes to a discussion.
+
+Research subagents in this repo have no filesystem write access. They return the finished document in their result payload and the parent session writes it to `docs/research/`. Expect to do that write yourself, and reconcile the report against anything you executed afterwards — a report committed verbatim can contradict work done after it was drafted.
