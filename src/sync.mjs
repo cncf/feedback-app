@@ -204,7 +204,7 @@ async function buildIndex(log) {
       `query($o:String!,$n:String!,$c:String){ repository(owner:$o,name:$n){
         discussions(first:100,after:$c){
           pageInfo{ hasNextPage endCursor }
-          nodes{ id number url closed body author{ login } category{ id name } }
+          nodes{ id number title url closed body author{ login } category{ id name } }
         }
       }}`,
       { o: owner, n: name, c: cursor }
@@ -229,6 +229,7 @@ async function buildIndex(log) {
         repo: m[2] || null,
         discussionId: n.id,
         number: n.number,
+        title: n.title,
         url: n.url,
         closed: n.closed,
         block: blockFromDiscussion(n.body),
@@ -393,7 +394,7 @@ async function run() {
           continue;
         }
         const d = await createDiscussion(issue.title, discussionBody(block, issue));
-        rec = { discussionId: d.id, number: d.number, url: d.url, closed: false, block };
+        rec = { discussionId: d.id, number: d.number, title: issue.title, url: d.url, closed: false, block };
         index.set(issue.id, rec);
         log(`  created discussion #${d.number} -> ${d.url}`);
       } else if (rec.closed) {
@@ -402,13 +403,18 @@ async function run() {
         log(`  relabelled -> reopened discussion #${rec.number}`);
       }
 
-      if (rec.block !== block) {
-        if (DRY) log(`  would mirror edit -> #${rec.number}`);
+      // Title is copied at creation, so it has to track edits too - otherwise a
+      // renamed issue leaves the discussion advertising the old name forever.
+      const titleChanged = rec.title !== undefined && rec.title !== issue.title;
+      if (rec.block !== block || titleChanged) {
+        const what = [rec.block !== block && "body", titleChanged && "title"].filter(Boolean).join("+");
+        if (DRY) log(`  would mirror ${what} -> #${rec.number}`);
         else {
           await updateDiscussion(rec.discussionId, issue.title, discussionBody(block, issue));
-          log(`  mirrored edit -> discussion #${rec.number}`);
+          log(`  mirrored ${what} -> discussion #${rec.number}`);
         }
         rec.block = block;
+        rec.title = issue.title;
       }
 
       await ensureBacklinks(issue, rec, log);
