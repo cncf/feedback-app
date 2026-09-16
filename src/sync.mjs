@@ -123,6 +123,17 @@ async function gqlWith(token, query, variables = {}) {
 }
 
 const hub = (q, v) => gqlWith(HUB_TOKEN, q, v);
+
+/**
+ * GitHub reports an App under two spellings: `viewer.login` gives
+ * "name[bot]" while `author.login` on the content it wrote gives plain "name".
+ * Comparing them naively makes the sync reject its own discussions and create
+ * duplicates forever, so every provenance comparison is normalised.
+ */
+const sameActor = (a, b) => {
+  const n = (x) => (x || "").toLowerCase().replace(/\[bot\]$/, "");
+  return !!a && !!b && n(a) === n(b);
+};
 const src = async (owner, q, v) => gqlWith(await sourceTokenFor(owner), q, v);
 
 /**
@@ -249,7 +260,7 @@ async function buildIndex(log) {
         log(`  ignoring #${n.number}: marker in category "${n.category?.name}"`);
         continue;
       }
-      if (n.author?.login !== us) {
+      if (!sameActor(n.author?.login, us)) {
         rejected++;
         log(`  ignoring #${n.number}: authored by @${n.author?.login}, not @${us}`);
         continue;
@@ -362,7 +373,7 @@ async function backlinkExists(kind, hostId, mark, expectedAuthor, useSrc, owner)
     const d = useSrc ? await src(owner, q, { id: hostId, c: cursor }) : await hub(q, { id: hostId, c: cursor });
     const conn = d?.node?.comments;
     if (!conn) return false;
-    if (conn.nodes.some((c) => c.body?.includes(mark) && c.author?.login === expectedAuthor)) return true;
+    if (conn.nodes.some((c) => c.body?.includes(mark) && sameActor(c.author?.login, expectedAuthor))) return true;
     if (!conn.pageInfo.hasNextPage) return false;
     cursor = conn.pageInfo.endCursor;
   }

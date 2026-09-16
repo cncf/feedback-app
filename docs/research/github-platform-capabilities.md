@@ -223,6 +223,30 @@ Two caveats, both real:
 
 ---
 
+## RESOLVED 2026-09-16: App installation token, executed against a real installation
+
+The two open questions are answered. `cncf-feedback` (App id 4969451, `discussions: write` + `metadata: read`, **no issues permission**) installed on the `cncf-projects` org; installation token minted; every mutation run against `cncf-projects/cert-manager`.
+
+| Capability | Result |
+|---|---|
+| `createDiscussion` in an **announcement-format** category | **OK** |
+| `createDiscussion` in a hand-created category (`Project Feedback`) | **OK** |
+| `addLabelsToLabelable` | **OK** |
+| `removeLabelsFromLabelable` | **OK** |
+| `clearLabelsFromLabelable` | **OK** |
+| `addDiscussionComment` | OK |
+| `updateDiscussion` | OK |
+| `closeDiscussion(reason: OUTDATED)` | OK, `closed = true` |
+| `reopenDiscussion` | OK, `closed = false` |
+
+Three findings that contradict earlier assumptions in this document:
+
+1. **`discussions: write` alone carries label add/remove/clear on discussions.** No `issues: write` is required. The rows in the capability table marked "unverified pending #14" are resolved as `discussions: write`.
+2. **An App installation CAN create in an announcement-format category.** The docs restrict announcement thread creation to "users with maintain or admin permissions"; an App installation is not a user, and it is nonetheless permitted. The moderation model that depends on this holds.
+3. **An installation token CAN resolve `viewer`**, returning `cncf-feedback[bot]`. This document previously assumed it could not.
+
+**Naming trap worth recording:** GitHub reports an App under two spellings. `viewer.login` returns `cncf-feedback[bot]`; `author.login` on content the App wrote returns `cncf-feedback`. Comparing them naively makes provenance checks reject the App's own content — in this codebase that produced a duplicate discussion on every run until logins were normalised.
+
 ## Execution proof: what was run
 
 The research agent had no shell, so the parent session ran the execution half on **2026-09-16** against `cncf/feedback-app` (same repo as `castrojo/cncf-feedback`, since transferred to the `cncf` org and renamed). Discussions were enabled on it first — the research-time observation `"has_discussions": false` is therefore obsolete, not a standing blocker.
