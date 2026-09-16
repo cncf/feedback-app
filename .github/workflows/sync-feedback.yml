@@ -37,18 +37,18 @@ jobs:
           repositories: cncf-feedback
 
       # Source App: issues:read + issues:write, installed by each participating
-      # project on their own org. `owner` omitted deliberately — the token is
-      # minted across every installation the App has.
-      - uses: actions/create-github-app-token@v3
-        id: source-token
-        with:
-          app-id: ${{ vars.SOURCE_APP_ID }}
-          private-key: ${{ secrets.SOURCE_APP_PRIVATE_KEY }}
-
+      # project on their own org.
+      #
+      # NOT minted here. An installation token is scoped to a single
+      # installation, so there is no one token covering every participating org
+      # — create-github-app-token without `owner` scopes to THIS repository.
+      # The sync enumerates installations with the App JWT and mints a token
+      # per owner, so it needs the key, not a token.
       - name: sync
         env:
           GH_HUB_TOKEN: ${{ steps.hub-token.outputs.token }}
-          GH_SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+          SOURCE_APP_ID: ${{ vars.SOURCE_APP_ID }}
+          SOURCE_APP_PRIVATE_KEY: ${{ secrets.SOURCE_APP_PRIVATE_KEY }}
         run: bun run src/sync.mjs
 
       - name: commit state

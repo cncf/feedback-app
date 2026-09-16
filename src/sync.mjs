@@ -11,19 +11,71 @@
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { dirname, join } from "path";
+import { createSign } from "crypto";
 
-// Split identities (decision 14): the hub App holds discussions:write on the
-// hub org; the source App holds issues:read/write on participating project
-// orgs. They are different installations and different keys. A single token is
-// accepted only for local testing.
+// Split identities (decision 14). The hub App holds discussions:write on the
+// hub; the source App is installed separately by each participating project on
+// their own org.
+//
+// An installation token is scoped to ONE installation. There is no token that
+// spans every org, so the source side must enumerate its installations and mint
+// a token per owner. That is why this script takes the source App's key rather
+// than a pre-minted token.
 const HUB_TOKEN = process.env.GH_HUB_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
-const SRC_TOKEN = process.env.GH_SOURCE_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
-if (!HUB_TOKEN || !SRC_TOKEN)
-  throw new Error("need GH_HUB_TOKEN and GH_SOURCE_TOKEN (or GH_TOKEN for local runs)");
-if (process.env.GH_HUB_TOKEN && process.env.GH_SOURCE_TOKEN) {
-  console.log("auth: split identities (hub + source tokens)");
-} else {
-  console.log("auth: single token - LOCAL TESTING ONLY, not the production shape");
+const SOURCE_APP_ID = process.env.SOURCE_APP_ID;
+const SOURCE_APP_KEY = process.env.SOURCE_APP_PRIVATE_KEY;
+const FALLBACK = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+if (!HUB_TOKEN) throw new Error("need GH_HUB_TOKEN (or GH_TOKEN for local runs)");
+
+const appMode = !!(SOURCE_APP_ID && SOURCE_APP_KEY);
+console.log(
+  appMode
+    ? "auth: hub token + source App (per-installation tokens)"
+    : "auth: single token - LOCAL TESTING ONLY, not the production shape"
+);
+
+function appJwt() {
+  const now = Math.floor(Date.now() / 1000);
+  const b = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+  const h = b({ alg: "RS256", typ: "JWT" });
+  const pl = b({ iat: now - 60, exp: now + 540, iss: String(SOURCE_APP_ID) });
+  const sg = createSign("RSA-SHA256");
+  sg.update(`${h}.${pl}`);
+  sg.end();
+  return `${h}.${pl}.${sg.sign(SOURCE_APP_KEY).toString("base64url")}`;
+}
+
+async function rest(path, token, init = {}) {
+  const r = await fetch("https://api.github.com" + path, {
+    ...init,
+    headers: {
+      authorization: `Bearer ${token}`,
+      accept: "application/vnd.github+json",
+      "user-agent": "cncf-feedback-sync",
+      ...(init.headers || {}),
+    },
+  });
+  if (!r.ok) throw new Error(`${path} -> ${r.status} ${(await r.text()).slice(0, 120)}`);
+  return r.json();
+}
+
+/** owner -> installation token, minted lazily and cached for this run. */
+const tokenCache = new Map();
+let installations = null;
+
+async function sourceTokenFor(owner) {
+  if (!appMode) return FALLBACK;
+  if (tokenCache.has(owner)) return tokenCache.get(owner);
+  if (!installations) {
+    const list = await rest("/app/installations", appJwt());
+    installations = new Map(list.map((i) => [i.account.login.toLowerCase(), i.id]));
+    console.log(`  source App installed on: ${[...installations.keys()].join(", ") || "(none)"}`);
+  }
+  const id = installations.get(owner.toLowerCase());
+  if (!id) throw new Error(`source App is not installed on "${owner}" - project must install it`);
+  const t = await rest(`/app/installations/${id}/access_tokens`, appJwt(), { method: "POST" });
+  tokenCache.set(owner, t.token);
+  return t.token;
 }
 
 const ROOT = join(import.meta.dir, "..");
@@ -51,10 +103,10 @@ async function gqlWith(token, query, variables = {}) {
   return j.data;
 }
 
-/** hub identity: discussions. source identity: issues. */
+/** hub identity: discussions. */
 const hub = (q, v) => gqlWith(HUB_TOKEN, q, v);
-const src = (q, v) => gqlWith(SRC_TOKEN, q, v);
-/** cross-identity read (backlink detection touches both sides) */
+/** source identity: issues, with the token for THAT owner's installation. */
+const src = async (owner, q, v) => gqlWith(await sourceTokenFor(owner), q, v);
 const gql = (q, v) => gqlWith(HUB_TOKEN, q, v);
 
 // ---------------------------------------------------------------- state
@@ -90,13 +142,14 @@ const marker = (issueId) => `<!-- cncf-feedback:issue=${issueId} -->`;
 const BACKLINK_MARK = "<!-- cncf-feedback:backlink -->";
 
 /** On adoption we must not re-post backlinks that already exist. Ask both sides. */
-async function existingBacklinks(issueId, discussionId) {
+async function existingBacklinks(issueId, discussionId, issueOwnerHint) {
   const q = `query($id:ID!){ node(id:$id){
     ... on Issue { comments(last:100){ nodes{ body } } }
     ... on Discussion { comments(last:100){ nodes{ body } } }
   }}`;
   const has = (d) => (d?.node?.comments?.nodes || []).some((c) => c.body?.includes(BACKLINK_MARK));
-  const [i, dsc] = await Promise.all([src(q, { id: issueId }), hub(q, { id: discussionId })]);
+  const owner = issueOwnerHint || "";
+  const [i, dsc] = await Promise.all([src(owner, q, { id: issueId }), hub(q, { id: discussionId })]);
   return { issue: has(i), discussion: has(dsc) };
 }
 
@@ -113,6 +166,7 @@ ${block}
 async function labelledIssues(repo, label) {
   const [owner, name] = repo.split("/");
   const d = await src(
+    owner,
     `query($owner:String!,$name:String!,$label:String!){
       repository(owner:$owner,name:$name){
         issues(first:50,states:OPEN,labels:[$label],orderBy:{field:UPDATED_AT,direction:DESC}){
@@ -126,10 +180,11 @@ async function labelledIssues(repo, label) {
 }
 
 /** Returns {ok, issue} - never conflates "cannot see it" with "label removed". */
-async function issueById(id) {
+async function issueById(id, owner) {
   let d;
   try {
     d = await src(
+      owner,
     `query($id:ID!){ node(id:$id){ ... on Issue {
       id number title body url state
       repository{ nameWithOwner }
@@ -200,8 +255,8 @@ const commentOnDiscussion = (id, body) =>
     { id, b: body }
   );
 
-const commentOnIssue = (id, body) =>
-  src(`mutation($id:ID!,$b:String!){ addComment(input:{subjectId:$id,body:$b}){ clientMutationId } }`, {
+const commentOnIssue = (owner, id, body) =>
+  src(owner, `mutation($id:ID!,$b:String!){ addComment(input:{subjectId:$id,body:$b}){ clientMutationId } }`, {
     id,
     b: body,
   });
@@ -239,7 +294,7 @@ async function publish(issue, state, log) {
     closed: !!disc.closed,
     lastBlock: block,
     backlinks: adopted
-      ? await existingBacklinks(issue.id, disc.id)
+      ? await existingBacklinks(issue.id, disc.id, issue.repo.split("/")[0])
       : { discussion: false, issue: false },
     syncedAt: new Date().toISOString(),
   });
@@ -262,6 +317,7 @@ async function ensureBacklinks(issue, rec, log) {
   }
   if (!rec.backlinks?.issue) {
     await commentOnIssue(
+      issue.repo.split("/")[0],
       issue.id,
       `${BACKLINK_MARK}\nFeedback discussion opened: ${rec.discussionUrl}\n\nEnd users can comment there without following this issue's implementation detail.`
     );
@@ -333,7 +389,7 @@ async function run() {
   log(`\nreconciling ${Object.keys(state.synced).length} known discussion(s)`);
   for (const [issueId, rec] of Object.entries(state.synced)) {
     if (seen.has(issueId) || rec.closed) continue;
-    const res = await issueById(issueId);
+    const res = await issueById(issueId, rec.repo.split("/")[0]);
 
     // Losing sight of an issue is NOT evidence the label was removed. An App
     // installation that was revoked, a repo that went private, or a transient
