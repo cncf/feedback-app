@@ -34,9 +34,15 @@ const FOOTER = "\n\n---\n*Mirrored from ";
 // The marker carries the source repo as well as the issue id: reconciliation
 // happens after the label is gone, so the index is the only thing that knows
 // which installation token can still see that issue.
-const marker = (issueId, repo) => `<!-- cncf-feedback:issue=${issueId} repo=${repo} -->`;
+// `bl` records which backlinks are already posted: "d" discussion side, "i"
+// issue side. Storing it here rather than re-scanning comments keeps the check
+// O(1) and, more importantly, correct: a comment marker ages out of any bounded
+// comment window on a busy issue, which would make the sync re-post the backlink
+// on every run forever.
+const marker = (issueId, repo, bl = "") =>
+  `<!-- cncf-feedback:issue=${issueId} repo=${repo}${bl ? ` bl=${bl}` : ""} -->`;
 const backlinkMark = (kind, id) => `<!-- cncf-feedback:backlink:${kind}=${id} -->`;
-const MARKER_RE = /<!-- cncf-feedback:issue=([A-Za-z0-9_\-=]+)(?: repo=([^\s>]+))? -->/;
+const MARKER_RE = /<!-- cncf-feedback:issue=([A-Za-z0-9_\-=]+)(?: repo=([^\s>]+))?(?: bl=([di]+))? -->/;
 
 // ------------------------------------------------------------------ auth
 // Split identities: the hub App holds discussions:write on the hub; the source
@@ -186,8 +192,8 @@ function blockFromDiscussion(body) {
   return s.trim() || null;
 }
 
-const discussionBody = (block, issue) =>
-  `${marker(issue.id, issue.repo)}\n${block}${FOOTER}[${issue.repo}#${issue.number}](${issue.url}). Edits to the source issue appear here.*`;
+const discussionBody = (block, issue, bl = "") =>
+  `${marker(issue.id, issue.repo, bl)}\n${block}${FOOTER}[${issue.repo}#${issue.number}](${issue.url}). Edits to the source issue appear here.*`;
 
 // ----------------------------------------------------------------- index
 
@@ -232,6 +238,7 @@ async function buildIndex(log) {
       index.set(m[1], {
         issueId: m[1],
         repo: m[2] || null,
+        bl: m[3] || "",
         discussionId: n.id,
         number: n.number,
         title: n.title,
@@ -319,35 +326,23 @@ const commentOnIssue = (owner, id, body) =>
  * commenter could suppress the real backlink. Require the marker keyed to THIS
  * target, and that we wrote it.
  */
-async function ensureBacklinks(issue, rec, log) {
+async function ensureBacklinks(issue, rec, block, log) {
   const owner = issue.repo.split("/")[0];
-  const q = `query($id:ID!){ node(id:$id){
-    ... on Issue { comments(last:100){ nodes{ body author{ login } } } }
-    ... on Discussion { comments(last:100){ nodes{ body author{ login } } } }
-  }}`;
-  const mine = (d, mark, who) =>
-    (d?.node?.comments?.nodes || []).some(
-      (c) => c.body?.includes(mark) && c.author?.login === who
-    );
+  let bl = rec.bl || "";
 
-  const [i, dsc, srcWho, hubWho] = await Promise.all([
-    src(owner, q, { id: issue.id }),
-    hub(q, { id: rec.discussionId }),
-    sourceIdentity(owner),
-    hubIdentity(),
-  ]);
-
-  if (!mine(dsc, backlinkMark("issue", issue.id), hubWho)) {
+  if (!bl.includes("d")) {
     if (DRY) log(`  would backlink -> discussion`);
     else {
       await commentOnDiscussion(
         rec.discussionId,
         `${backlinkMark("issue", issue.id)}\nTracking issue: [${issue.repo}#${issue.number}](${issue.url})\n\nThis thread is for **end-user feedback**. Implementation discussion belongs on the issue.`
       );
+      bl += "d";
       log(`  backlink -> discussion`);
     }
   }
-  if (!mine(i, backlinkMark("discussion", rec.discussionId), srcWho)) {
+
+  if (!bl.includes("i")) {
     if (DRY) log(`  would backlink -> issue`);
     else {
       await commentOnIssue(
@@ -355,8 +350,15 @@ async function ensureBacklinks(issue, rec, log) {
         issue.id,
         `${backlinkMark("discussion", rec.discussionId)}\nFeedback discussion opened: ${rec.url}\n\nEnd users can comment there without following this issue's implementation detail.`
       );
+      bl += "i";
       log(`  backlink -> issue`);
     }
+  }
+
+  // persist the flag into the discussion body - the only durable, trusted store
+  if (!DRY && bl !== (rec.bl || "")) {
+    await updateDiscussion(rec.discussionId, issue.title, discussionBody(block, issue, bl));
+    rec.bl = bl;
   }
 }
 
@@ -405,7 +407,7 @@ async function run() {
           continue;
         }
         const d = await createDiscussion(issue.title, discussionBody(block, issue));
-        rec = { discussionId: d.id, number: d.number, title: issue.title, url: d.url, closed: false, block };
+        rec = { discussionId: d.id, number: d.number, title: issue.title, url: d.url, closed: false, block, bl: "" };
         index.set(issue.id, rec);
         log(`  created discussion #${d.number} -> ${d.url}`);
       } else if (rec.closed) {
@@ -421,14 +423,14 @@ async function run() {
         const what = [rec.block !== block && "body", titleChanged && "title"].filter(Boolean).join("+");
         if (DRY) log(`  would mirror ${what} -> #${rec.number}`);
         else {
-          await updateDiscussion(rec.discussionId, issue.title, discussionBody(block, issue));
+          await updateDiscussion(rec.discussionId, issue.title, discussionBody(block, issue, rec.bl || ""));
           log(`  mirrored ${what} -> discussion #${rec.number}`);
         }
         rec.block = block;
         rec.title = issue.title;
       }
 
-      await ensureBacklinks(issue, rec, log);
+      await ensureBacklinks(issue, rec, block, log);
     }
   }
 
