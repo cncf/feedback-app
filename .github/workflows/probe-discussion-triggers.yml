@@ -1,0 +1,9 @@
+name: probe-discussion-triggers
+on:
+  discussion:
+    types: [created, closed, reopened, labeled]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "action=${{ github.event.action }} number=${{ github.event.discussion.number }}"

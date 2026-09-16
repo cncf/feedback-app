@@ -133,40 +133,62 @@ without `repositories` scopes to every repo in that installation; omitting both
 scopes to the current repo.
 
 So "must be an App" is a statement about the **token**, not about running a
-hosted service. Actions-as-carrier with App-as-identity is a real option and is
-usually the cheapest one — no server, no webhook endpoint, no hosting.
+hosted service. But the runtime choice is governed by a second constraint that
+is easy to miss and expensive to get wrong: **where the App's private key has to
+live.**
 
-### The two-workflow pattern
+### The private key is the real constraint
 
-Actions do **not** categorically forfeit inbound events. A workflow triggers on
-events in **its own** repository, so put one at each end:
+`actions/create-github-app-token` needs `private-key` as a secret in the repo or
+org running the workflow. That key authenticates the **App itself**, globally —
+not one installation. Anyone who can read it can mint tokens for **every**
+installation of that App.
 
-| Workflow | Lives in | Triggers on | Writes to |
-|---|---|---|---|
-| Outbound | source repo | `on: issues` (`labeled`, `edited`, …) | hub repo, via App token scoped to the hub |
-| Inbound | hub repo | `on: discussion`, `on: discussion_comment` | source repos, via App token scoped to them |
+A workflow secret is readable by any workflow, and a maintainer who can modify a
+workflow can exfiltrate it. So putting an outbound workflow in each source
+repository means shipping a key that unlocks every other participant to every
+participating org. At one owner that is a non-issue. At 175 third-party orgs it
+is a foundation-wide compromise waiting for its first careless fork.
 
-Each mints its own installation token with `actions/create-github-app-token`, so
-neither needs a server. That covers both directions of drift.
+**Installing an App is not the same as holding its key.** An org installs the
+App by authorizing it; that grants the App access to that org and requires no
+secret on their side. Only *minting a token in their CI* requires the key. That
+asymmetry is what makes the next pattern work.
 
-**What the pattern does not cover**, and what a poller or webhook relay is
-actually for:
+### Carrier patterns, with blast radius
+
+| Pattern | Key lives in | Blast radius | Inbound events | Hosting |
+|---|---|---|---|---|
+| Workflow in every source repo | every source org | **Whole App — unacceptable at scale** | `on: issues` locally | none |
+| Hub-only workflows + polling sources | hub org only | one org you control | `on: discussion` in hub; source side polled | none |
+| Hosted webhook service | one server | one server you control | all 15 actions, both sides | server + public endpoint |
+| Per-org Apps | each org, own App | one org each | local | none, but N Apps to register and rotate |
+
+**Hub-only is usually the right shape for a many-source topology.** The App is
+installed on source orgs so it can read their issues and write back, but the key
+never leaves the hub: hub workflows poll source repos for the feedback label and
+handle local `on: discussion` events natively. You trade issue-side latency for
+keeping a single high-value secret in one place.
+
+**Per-org Apps** remove the shared blast radius but multiply registration, key
+rotation, and installation management by the number of orgs — rarely worth it
+below a large N, and an operational burden forever after.
+
+### What no Actions-based pattern covers
 
 - **`closed` and `reopened`.** The Actions trigger list for `discussion` is the
   13-action subset — it omits exactly these two (see Documentation Hazards). A
   hub workflow cannot trigger on a discussion being closed or reopened, even in
-  its own repo. If closing a discussion must propagate, that path needs a poll
-  or a relay.
+  its own repo. If close must propagate, that path needs a poll or a relay.
 - **Cross-repo delivery to a source-local workflow.** A workflow in the source
-  repo never sees the hub's `discussion` events. Inbound handling must live in
-  the hub, not be bolted onto the outbound workflow.
-- **Latency floor.** Workflow dispatch is slower than a webhook handler, and a
-  poll is slower still.
+  repo never sees the hub's `discussion` events. Inbound handling lives in the
+  hub or in a hosted receiver.
+- **Latency floor.** Workflow dispatch is slower than a webhook handler; a poll
+  is slower still.
 
-So the honest carrier comparison is: two workflows (no hosting, no `closed`
-/`reopened`), a hosted webhook service (all 15 actions, needs hosting), or a
-poller (everything, slowest). That tradeoff — not the credential — is what
-should decide the carrier.
+So the honest comparison is three-axis — **events covered, hosting cost, and key
+blast radius** — and the third is the one that disqualifies the otherwise
+cheapest option. Decide on those, not on the credential.
 
 ## Permission Mapping Is Undocumented
 
