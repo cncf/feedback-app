@@ -10,6 +10,11 @@
  * Content flows one way. The only write into a project repo is the backlink
  * comment, posted once and never updated.
  *
+ * NOTE ON THE MARKERS: text outside BEGIN-BLOCK/END-BLOCK is NOT private. It
+ * stays fully visible in the source issue, which is public. The markers are
+ * curation - they choose what is worth mirroring to end users in the hub - not
+ * confidentiality. Never describe them as hiding anything.
+ *
  * There is NO local state. The mapping lives in the hub discussions themselves,
  * as a marker in each body, and is rebuilt every run. A state file would be a
  * second source of truth that can fail to persist (protected branches, failed

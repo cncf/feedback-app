@@ -20,9 +20,35 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
+      # The schedule is live from the moment this lands, but the Apps may not be
+      # registered yet. Skip cleanly rather than emitting a failed run every
+      # five minutes - a red cron nobody has wired up yet trains people to
+      # ignore red crons.
+      - name: check configuration
+        id: cfg
+        env:
+          HUB_APP_ID: ${{ vars.HUB_APP_ID }}
+          SOURCE_APP_ID: ${{ vars.SOURCE_APP_ID }}
+          HUB_KEY: ${{ secrets.HUB_APP_PRIVATE_KEY }}
+          SOURCE_KEY: ${{ secrets.SOURCE_APP_PRIVATE_KEY }}
+        run: |
+          missing=()
+          [[ -z "$HUB_APP_ID"    ]] && missing+=(vars.HUB_APP_ID)
+          [[ -z "$SOURCE_APP_ID" ]] && missing+=(vars.SOURCE_APP_ID)
+          [[ -z "$HUB_KEY"       ]] && missing+=(secrets.HUB_APP_PRIVATE_KEY)
+          [[ -z "$SOURCE_KEY"    ]] && missing+=(secrets.SOURCE_APP_PRIVATE_KEY)
+          if (( ${#missing[@]} )); then
+            echo "::notice::sync not configured yet - missing: ${missing[*]}"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v5
+        if: steps.cfg.outputs.ready == 'true'
 
       - uses: oven-sh/setup-bun@v2
+        if: steps.cfg.outputs.ready == 'true'
         with:
           bun-version: latest
 
@@ -32,6 +58,7 @@ jobs:
       # Hub App: discussions:write, installed on the hub org only.
       - uses: actions/create-github-app-token@v3
         id: hub-token
+        if: steps.cfg.outputs.ready == 'true'
         with:
           app-id: ${{ vars.HUB_APP_ID }}
           private-key: ${{ secrets.HUB_APP_PRIVATE_KEY }}
@@ -47,6 +74,7 @@ jobs:
       # The sync enumerates installations with the App JWT and mints a token
       # per owner, so it needs the key, not a token.
       - name: sync
+        if: steps.cfg.outputs.ready == 'true'
         env:
           GH_HUB_TOKEN: ${{ steps.hub-token.outputs.token }}
           SOURCE_APP_ID: ${{ vars.SOURCE_APP_ID }}
