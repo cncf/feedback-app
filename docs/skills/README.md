@@ -8,7 +8,8 @@ Read the matching skill **before** any global skill or training-data recall.
 | Task | Skill |
 |---|---|
 | Changing sync behaviour; reviewing a change; "why is it built this way" | [`feedback-sync-architecture.md`](feedback-sync-architecture.md) |
-| Deploying, configuring, onboarding a project, debugging a run | [`operating-feedback-sync.md`](operating-feedback-sync.md) |
+| **Onboarding a project**, provisioning its repo, auditing drift | [`adding-a-project.md`](adding-a-project.md) |
+| Deploying, configuring, debugging a run | [`operating-feedback-sync.md`](operating-feedback-sync.md) |
 | Registering Apps, public vs private, tokens, key custody | [`github-app-credentials.md`](github-app-credentials.md) |
 | Discussions API mechanics, category formats, webhook actions | [`github-discussions-api.md`](github-discussions-api.md) |
 
@@ -46,7 +47,11 @@ skill.
 4. **A query for labelled issues can never see a label being removed.** Any
    design that closes on unlabel needs a durable, enumerable index and a second
    reconciliation pass. → `feedback-sync-architecture.md`
-5. **Category format is not exposed by the API.** `isAnswerable` is not format.
+5. **Feedback repos host discussions and nothing else** — and pull requests
+   cannot be disabled by any setting, so the control is keeping the repo
+   **empty**. A README creates a branch and with it a PR surface.
+   → `adding-a-project.md`
+6. **Category format is not exposed by the API.** `isAnswerable` is not format.
    Verify announcement-format in the UI or the moderation guarantee silently
    does not hold. → `operating-feedback-sync.md`
 

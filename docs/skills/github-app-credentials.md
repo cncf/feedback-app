@@ -173,9 +173,15 @@ everything the App might do anywhere.
 
 - **One App** — one registration, one key, one rotation. Every installer's
   prompt shows permissions their side never exercises.
-- **Split identities** — one App per side of the system, each requesting only
-  what that side uses. Installers see an honest, minimal prompt. Costs N
-  registrations, N keys, N rotations.
+- **Split identities** — one App per *side* of the system (typically two: one
+  that reads/writes on installer repos, one that acts on your own), each
+  requesting only what that side uses. Installers see an honest, minimal prompt.
+  Costs **two** registrations, two keys, two rotations — a fixed cost that does
+  not grow with the number of installers.
+
+Do not confuse this with **one App per org**, further down: that cost is N and
+grows with every participant. Split identities is per-side; per-org Apps are
+per-installer.
 
 Choose on whether the install prompt is part of your adoption story. If
 independent parties must be persuaded to install, the narrower prompt is worth

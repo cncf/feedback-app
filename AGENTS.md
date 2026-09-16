@@ -42,7 +42,8 @@ recall. Index: [`docs/skills/README.md`](docs/skills/README.md).
 | Area | Skill |
 |---|---|
 | Sync behaviour, design rationale, reviewing changes | `docs/skills/feedback-sync-architecture.md` |
-| Deploy, configure, onboard, debug | `docs/skills/operating-feedback-sync.md` |
+| Onboarding a project, provisioning repos, auditing drift | `docs/skills/adding-a-project.md` |
+| Deploy, configure, debug a run | `docs/skills/operating-feedback-sync.md` |
 | GitHub App registration, tokens, key custody | `docs/skills/github-app-credentials.md` |
 | Discussions API, category formats, webhooks | `docs/skills/github-discussions-api.md` |
 
