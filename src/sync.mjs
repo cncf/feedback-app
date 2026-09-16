@@ -26,9 +26,12 @@ const DRY = process.argv.includes("--dry-run");
 const BEGIN = "<!-- BEGIN-BLOCK -->";
 const END = "<!-- END-BLOCK -->";
 const FOOTER = "\n\n---\n*Mirrored from ";
-const marker = (issueId) => `<!-- cncf-feedback:issue=${issueId} -->`;
+// The marker carries the source repo as well as the issue id: reconciliation
+// happens after the label is gone, so the index is the only thing that knows
+// which installation token can still see that issue.
+const marker = (issueId, repo) => `<!-- cncf-feedback:issue=${issueId} repo=${repo} -->`;
 const backlinkMark = (kind, id) => `<!-- cncf-feedback:backlink:${kind}=${id} -->`;
-const MARKER_RE = /<!-- cncf-feedback:issue=([A-Za-z0-9_\-=]+) -->/;
+const MARKER_RE = /<!-- cncf-feedback:issue=([A-Za-z0-9_\-=]+)(?: repo=([^\s>]+))? -->/;
 
 // ------------------------------------------------------------------ auth
 // Split identities: the hub App holds discussions:write on the hub; the source
@@ -76,8 +79,14 @@ async function sourceTokenFor(owner) {
   const key = owner.toLowerCase();
   if (tokenCache.has(key)) return tokenCache.get(key);
   if (!installations) {
-    const list = await rest("/app/installations", appJwt());
-    installations = new Map(list.map((i) => [i.account.login.toLowerCase(), i.id]));
+    // paginated: an App installed across many orgs exceeds one page
+    installations = new Map();
+    const jwt = appJwt();
+    for (let page = 1; ; page++) {
+      const batch = await rest(`/app/installations?per_page=100&page=${page}`, jwt);
+      for (const i of batch) installations.set(i.account.login.toLowerCase(), i.id);
+      if (batch.length < 100) break;
+    }
     console.log(`  source App installed on: ${[...installations.keys()].join(", ") || "(none)"}`);
   }
   const id = installations.get(key);
@@ -105,26 +114,48 @@ async function gqlWith(token, query, variables = {}) {
 const hub = (q, v) => gqlWith(HUB_TOKEN, q, v);
 const src = async (owner, q, v) => gqlWith(await sourceTokenFor(owner), q, v);
 
+/**
+ * Provenance checks must never fail open. If we cannot establish who we are,
+ * we cannot tell our own discussions and comments from an impostor's, so the
+ * run aborts rather than silently trusting everything.
+ *
+ * Installation tokens cannot resolve `viewer`, so App mode requires the bot
+ * login to be configured (`<app-slug>[bot]`).
+ */
 let _hubWho;
 async function hubIdentity() {
   if (_hubWho !== undefined) return _hubWho;
+  if (CONFIG.hub.botLogin) return (_hubWho = CONFIG.hub.botLogin);
   try {
     _hubWho = (await hub(`{ viewer { login } }`)).viewer.login;
-  } catch {
-    _hubWho = null;
+  } catch (e) {
+    throw new Error(
+      `cannot establish hub identity (${e.message.slice(0, 60)}). ` +
+        `Set hub.botLogin in config.json to the App's bot login, e.g. "cncf-feedback[bot]". ` +
+        `Refusing to run without provenance checks.`
+    );
   }
+  if (!_hubWho) throw new Error("hub identity resolved empty - refusing to run");
   return _hubWho;
 }
 
 const _srcWho = new Map();
 async function sourceIdentity(owner) {
   if (_srcWho.has(owner)) return _srcWho.get(owner);
-  let who = null;
+  if (CONFIG.source?.botLogin) {
+    _srcWho.set(owner, CONFIG.source.botLogin);
+    return CONFIG.source.botLogin;
+  }
+  let who;
   try {
     who = (await src(owner, `{ viewer { login } }`)).viewer.login;
-  } catch {
-    who = null;
+  } catch (e) {
+    throw new Error(
+      `cannot establish source identity for "${owner}" (${e.message.slice(0, 60)}). ` +
+        `Set source.botLogin in config.json. Refusing to run without provenance checks.`
+    );
   }
+  if (!who) throw new Error(`source identity for "${owner}" resolved empty - refusing to run`);
   _srcWho.set(owner, who);
   return who;
 }
@@ -151,7 +182,7 @@ function blockFromDiscussion(body) {
 }
 
 const discussionBody = (block, issue) =>
-  `${marker(issue.id)}\n${block}${FOOTER}[${issue.repo}#${issue.number}](${issue.url}). Edits to the source issue appear here.*`;
+  `${marker(issue.id, issue.repo)}\n${block}${FOOTER}[${issue.repo}#${issue.number}](${issue.url}). Edits to the source issue appear here.*`;
 
 // ----------------------------------------------------------------- index
 
@@ -188,13 +219,14 @@ async function buildIndex(log) {
         log(`  ignoring #${n.number}: marker in category "${n.category?.name}"`);
         continue;
       }
-      if (us && n.author?.login !== us) {
+      if (n.author?.login !== us) {
         rejected++;
         log(`  ignoring #${n.number}: authored by @${n.author?.login}, not @${us}`);
         continue;
       }
       index.set(m[1], {
         issueId: m[1],
+        repo: m[2] || null,
         discussionId: n.id,
         number: n.number,
         url: n.url,
@@ -289,7 +321,7 @@ async function ensureBacklinks(issue, rec, log) {
   }}`;
   const mine = (d, mark, who) =>
     (d?.node?.comments?.nodes || []).some(
-      (c) => c.body?.includes(mark) && (!who || c.author?.login === who)
+      (c) => c.body?.includes(mark) && c.author?.login === who
     );
 
   const [i, dsc, srcWho, hubWho] = await Promise.all([
@@ -388,7 +420,12 @@ async function run() {
   log(`\nreconciling ${index.size} tracked discussion(s)`);
   for (const [issueId, rec] of index) {
     if (seen.has(issueId) || rec.closed) continue;
-    const res = await issueById(issueId, CONFIG.sources[0].split("/")[0]);
+    // owner comes from the marker, not from a guess at the first source
+    if (!rec.repo) {
+      log(`  #${rec.number}: legacy marker without repo - re-label the issue to upgrade it`);
+      continue;
+    }
+    const res = await issueById(issueId, rec.repo.split("/")[0]);
 
     // Losing sight of an issue is not evidence the label was removed. A
     // revoked installation, a repo gone private, or a transient error all look

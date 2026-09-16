@@ -4,9 +4,14 @@
     "repo": "cncf/cncf-feedback",
     "repositoryId": "R_kgDOUd6KpQ",
     "categoryName": "Announcements",
-    "categoryId": "DIC_kwDOUd6Kpc4DFwg7"
+    "categoryId": "DIC_kwDOUd6Kpc4DFwg7",
+    "botLogin": null
   },
   "sources": [
     "cncf/feedback-app"
-  ]
+  ],
+  "source": {
+    "botLogin": null
+  },
+  "_note": "botLogin must be set to '<app-slug>[bot]' before running with App tokens; installation tokens cannot resolve viewer."
 }
