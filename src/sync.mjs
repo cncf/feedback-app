@@ -2,37 +2,46 @@
 /**
  * CNCF feedback loop sync.
  *
- * Maintainer labels an issue in a participating project repo.
- * A discussion appears in the hub. Both sides get a backlink.
- * Label removed -> discussion closed. Label re-added -> reopened.
+ * A maintainer labels an issue in a participating project repo; a discussion
+ * appears in the hub; both sides get a backlink. Editing the issue's shared
+ * block mirrors to the discussion. Removing the label closes the discussion;
+ * re-adding it reopens the same one.
  *
- * Content flows one way (issue -> discussion). The only write into a
- * project repo is the backlink comment, posted once, never updated.
+ * Content flows one way. The only write into a project repo is the backlink
+ * comment, posted once and never updated.
+ *
+ * There is NO local state. The mapping lives in the hub discussions themselves,
+ * as a marker in each body, and is rebuilt every run. A state file would be a
+ * second source of truth that can fail to persist (protected branches, failed
+ * pushes, fresh runners) and silently lose the ability to detect unlabelling.
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { dirname, join } from "path";
+import { readFileSync } from "fs";
+import { join } from "path";
 import { createSign } from "crypto";
 
-// Split identities (decision 14). The hub App holds discussions:write on the
-// hub; the source App is installed separately by each participating project on
-// their own org.
-//
-// An installation token is scoped to ONE installation. There is no token that
-// spans every org, so the source side must enumerate its installations and mint
-// a token per owner. That is why this script takes the source App's key rather
-// than a pre-minted token.
+const ROOT = join(import.meta.dir, "..");
+const CONFIG = JSON.parse(readFileSync(join(ROOT, "config.json"), "utf8"));
+const DRY = process.argv.includes("--dry-run");
+
+const BEGIN = "<!-- BEGIN-BLOCK -->";
+const END = "<!-- END-BLOCK -->";
+const FOOTER = "\n\n---\n*Mirrored from ";
+const marker = (issueId) => `<!-- cncf-feedback:issue=${issueId} -->`;
+const backlinkMark = (kind, id) => `<!-- cncf-feedback:backlink:${kind}=${id} -->`;
+const MARKER_RE = /<!-- cncf-feedback:issue=([A-Za-z0-9_\-=]+) -->/;
+
+// ------------------------------------------------------------------ auth
+// Split identities: the hub App holds discussions:write on the hub; the source
+// App is installed separately by each participating project on its own org.
+// An installation token covers ONE installation, so the source side enumerates
+// installations and mints a token per owner. Hence a key, not a token.
+
 const HUB_TOKEN = process.env.GH_HUB_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 const SOURCE_APP_ID = process.env.SOURCE_APP_ID;
 const SOURCE_APP_KEY = process.env.SOURCE_APP_PRIVATE_KEY;
 const FALLBACK = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 if (!HUB_TOKEN) throw new Error("need GH_HUB_TOKEN (or GH_TOKEN for local runs)");
-
 const appMode = !!(SOURCE_APP_ID && SOURCE_APP_KEY);
-console.log(
-  appMode
-    ? "auth: hub token + source App (per-installation tokens)"
-    : "auth: single token - LOCAL TESTING ONLY, not the production shape"
-);
 
 function appJwt() {
   const now = Math.floor(Date.now() / 1000);
@@ -59,34 +68,24 @@ async function rest(path, token, init = {}) {
   return r.json();
 }
 
-/** owner -> installation token, minted lazily and cached for this run. */
 const tokenCache = new Map();
 let installations = null;
 
 async function sourceTokenFor(owner) {
   if (!appMode) return FALLBACK;
-  if (tokenCache.has(owner)) return tokenCache.get(owner);
+  const key = owner.toLowerCase();
+  if (tokenCache.has(key)) return tokenCache.get(key);
   if (!installations) {
     const list = await rest("/app/installations", appJwt());
     installations = new Map(list.map((i) => [i.account.login.toLowerCase(), i.id]));
     console.log(`  source App installed on: ${[...installations.keys()].join(", ") || "(none)"}`);
   }
-  const id = installations.get(owner.toLowerCase());
-  if (!id) throw new Error(`source App is not installed on "${owner}" - project must install it`);
+  const id = installations.get(key);
+  if (!id) throw new Error(`source App not installed on "${owner}" - the project must install it`);
   const t = await rest(`/app/installations/${id}/access_tokens`, appJwt(), { method: "POST" });
-  tokenCache.set(owner, t.token);
+  tokenCache.set(key, t.token);
   return t.token;
 }
-
-const ROOT = join(import.meta.dir, "..");
-const CONFIG = JSON.parse(readFileSync(join(ROOT, "config.json"), "utf8"));
-const STATE_PATH = join(ROOT, CONFIG.statePath);
-const DRY = process.argv.includes("--dry-run");
-
-const BEGIN = "<!-- BEGIN-BLOCK -->";
-const END = "<!-- END-BLOCK -->";
-
-// ---------------------------------------------------------------- api
 
 async function gqlWith(token, query, variables = {}) {
   const r = await fetch("https://api.github.com/graphql", {
@@ -103,32 +102,36 @@ async function gqlWith(token, query, variables = {}) {
   return j.data;
 }
 
-/** hub identity: discussions. */
 const hub = (q, v) => gqlWith(HUB_TOKEN, q, v);
-/** source identity: issues, with the token for THAT owner's installation. */
 const src = async (owner, q, v) => gqlWith(await sourceTokenFor(owner), q, v);
-const gql = (q, v) => gqlWith(HUB_TOKEN, q, v);
 
-// ---------------------------------------------------------------- state
-
-function loadState() {
-  if (!existsSync(STATE_PATH)) return { version: 1, synced: {} };
-  return JSON.parse(readFileSync(STATE_PATH, "utf8"));
+let _hubWho;
+async function hubIdentity() {
+  if (_hubWho !== undefined) return _hubWho;
+  try {
+    _hubWho = (await hub(`{ viewer { login } }`)).viewer.login;
+  } catch {
+    _hubWho = null;
+  }
+  return _hubWho;
 }
 
-function saveState(s) {
-  if (DRY) return;
-  mkdirSync(dirname(STATE_PATH), { recursive: true });
-  writeFileSync(STATE_PATH, JSON.stringify(s, null, 2) + "\n");
+const _srcWho = new Map();
+async function sourceIdentity(owner) {
+  if (_srcWho.has(owner)) return _srcWho.get(owner);
+  let who = null;
+  try {
+    who = (await src(owner, `{ viewer { login } }`)).viewer.login;
+  } catch {
+    who = null;
+  }
+  _srcWho.set(owner, who);
+  return who;
 }
 
-// ---------------------------------------------------------------- content
+// --------------------------------------------------------------- content
 
-/**
- * The synced region is delimited by markers. Fail closed: if an issue
- * that previously synced no longer parses, we refuse to overwrite a live
- * discussion with a truncated body.
- */
+/** Fail closed: no markers means nothing is shared, never a truncated body. */
 export function extractBlock(body) {
   if (!body) return null;
   const i = body.indexOf(BEGIN);
@@ -138,281 +141,272 @@ export function extractBlock(body) {
   return inner.length ? inner : null;
 }
 
-const marker = (issueId) => `<!-- cncf-feedback:issue=${issueId} -->`;
-const BACKLINK_MARK = "<!-- cncf-feedback:backlink -->";
-
-/** On adoption we must not re-post backlinks that already exist. Ask both sides. */
-async function existingBacklinks(issueId, discussionId, issueOwnerHint) {
-  const q = `query($id:ID!){ node(id:$id){
-    ... on Issue { comments(last:100){ nodes{ body } } }
-    ... on Discussion { comments(last:100){ nodes{ body } } }
-  }}`;
-  const has = (d) => (d?.node?.comments?.nodes || []).some((c) => c.body?.includes(BACKLINK_MARK));
-  const owner = issueOwnerHint || "";
-  const [i, dsc] = await Promise.all([src(owner, q, { id: issueId }), hub(q, { id: discussionId })]);
-  return { issue: has(i), discussion: has(dsc) };
+/** The block as it currently stands in a discussion, so edits diff cleanly. */
+function blockFromDiscussion(body) {
+  if (!body) return null;
+  let s = body.replace(MARKER_RE, "").trimStart();
+  const f = s.indexOf(FOOTER.trimStart());
+  if (f !== -1) s = s.slice(0, f);
+  return s.trim() || null;
 }
 
-function discussionBody(block, issue) {
-  return `${marker(issue.id)}
-${block}
+const discussionBody = (block, issue) =>
+  `${marker(issue.id)}\n${block}${FOOTER}[${issue.repo}#${issue.number}](${issue.url}). Edits to the source issue appear here.*`;
 
----
-*Mirrored from [${issue.repo}#${issue.number}](${issue.url}). Edits to the source issue appear here. Last synced ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC.*`;
+// ----------------------------------------------------------------- index
+
+/**
+ * Rebuild issue -> discussion from the hub itself. Only discussions in the
+ * configured category and authored by us are trusted: the marker is public
+ * text, so anyone could paste it into an open category to hijack adoption.
+ */
+async function buildIndex(log) {
+  const us = await hubIdentity();
+  const [owner, name] = CONFIG.hub.repo.split("/");
+  const index = new Map();
+  let cursor = null,
+    page = 0,
+    rejected = 0;
+
+  for (;;) {
+    const d = await hub(
+      `query($o:String!,$n:String!,$c:String){ repository(owner:$o,name:$n){
+        discussions(first:100,after:$c){
+          pageInfo{ hasNextPage endCursor }
+          nodes{ id number url closed body author{ login } category{ id name } }
+        }
+      }}`,
+      { o: owner, n: name, c: cursor }
+    );
+    const conn = d.repository.discussions;
+    page++;
+    for (const n of conn.nodes) {
+      const m = n.body?.match(MARKER_RE);
+      if (!m) continue;
+      if (n.category?.id !== CONFIG.hub.categoryId) {
+        rejected++;
+        log(`  ignoring #${n.number}: marker in category "${n.category?.name}"`);
+        continue;
+      }
+      if (us && n.author?.login !== us) {
+        rejected++;
+        log(`  ignoring #${n.number}: authored by @${n.author?.login}, not @${us}`);
+        continue;
+      }
+      index.set(m[1], {
+        issueId: m[1],
+        discussionId: n.id,
+        number: n.number,
+        url: n.url,
+        closed: n.closed,
+        block: blockFromDiscussion(n.body),
+      });
+    }
+    if (!conn.pageInfo.hasNextPage) break;
+    cursor = conn.pageInfo.endCursor;
+  }
+  log(`index: ${index.size} tracked across ${page} page(s)${rejected ? `, ${rejected} rejected` : ""}`);
+  return index;
 }
 
-// ---------------------------------------------------------------- queries
+// -------------------------------------------------------------- queries
 
 async function labelledIssues(repo, label) {
   const [owner, name] = repo.split("/");
   const d = await src(
     owner,
-    `query($owner:String!,$name:String!,$label:String!){
-      repository(owner:$owner,name:$name){
-        issues(first:50,states:OPEN,labels:[$label],orderBy:{field:UPDATED_AT,direction:DESC}){
-          nodes{ id number title body url updatedAt }
-        }
+    `query($o:String!,$n:String!,$l:String!){ repository(owner:$o,name:$n){
+      issues(first:100,states:OPEN,labels:[$l],orderBy:{field:UPDATED_AT,direction:DESC}){
+        nodes{ id number title body url }
       }
-    }`,
-    { owner, name, label }
+    }}`,
+    { o: owner, n: name, l: label }
   );
   return d.repository.issues.nodes.map((n) => ({ ...n, repo }));
 }
 
-/** Returns {ok, issue} - never conflates "cannot see it" with "label removed". */
+/** {ok,issue} - never conflates "cannot see it" with "label removed". */
 async function issueById(id, owner) {
-  let d;
   try {
-    d = await src(
+    const d = await src(
       owner,
-    `query($id:ID!){ node(id:$id){ ... on Issue {
-      id number title body url state
-      repository{ nameWithOwner }
-      labels(first:50){ nodes{ name } }
-    }}}`,
+      `query($id:ID!){ node(id:$id){ ... on Issue {
+        id number title body url
+        repository{ nameWithOwner }
+        labels(first:100){ nodes{ name } }
+      }}}`,
       { id }
     );
+    if (!d.node) return { ok: false, reason: "not visible" };
+    return {
+      ok: true,
+      issue: {
+        ...d.node,
+        repo: d.node.repository.nameWithOwner,
+        labels: d.node.labels.nodes.map((l) => l.name),
+      },
+    };
   } catch (e) {
-    return { ok: false, reason: e.message };
+    return { ok: false, reason: e.message.slice(0, 80) };
   }
-  const n = d.node;
-  if (!n) return { ok: false, reason: "node not visible" };
-  return {
-    ok: true,
-    issue: { ...n, repo: n.repository.nameWithOwner, labels: n.labels.nodes.map((l) => l.name) },
-  };
 }
 
-/**
- * Source of truth for "does a discussion already exist for this issue" is
- * GitHub, not our state file. A fresh runner with no state, or a run whose
- * state commit was lost, must not recreate discussions.
- */
-async function findExistingDiscussion(issueId) {
-  const q = `repo:${CONFIG.hub.repo} in:body "${marker(issueId)}"`;
-  const d = await hub(
-    `query($q:String!){ search(type:DISCUSSION,query:$q,first:5){ nodes{ ... on Discussion {
-      id number url closed body
-    }}}}`,
-    { q }
-  );
-  const hit = (d.search.nodes || []).find((n) => n.body?.includes(marker(issueId)));
-  return hit || null;
-}
+// ------------------------------------------------------------ mutations
 
-// ---------------------------------------------------------------- mutations
-
-async function createDiscussion(title, body) {
-  const d = await hub(
-    `mutation($r:ID!,$c:ID!,$t:String!,$b:String!){
-      createDiscussion(input:{repositoryId:$r,categoryId:$c,title:$t,body:$b}){
-        discussion{ id number url }
-      }
-    }`,
-    { r: CONFIG.hub.repositoryId, c: CONFIG.hub.categoryId, t: title, b: body }
-  );
-  return d.createDiscussion.discussion;
-}
-
-const updateDiscussion = (id, title, body) =>
+const createDiscussion = (t, b) =>
   hub(
-    `mutation($id:ID!,$t:String!,$b:String!){ updateDiscussion(input:{discussionId:$id,title:$t,body:$b}){ discussion{ id } } }`,
-    { id, t: title, b: body }
-  );
+    `mutation($r:ID!,$c:ID!,$t:String!,$b:String!){ createDiscussion(input:{repositoryId:$r,categoryId:$c,title:$t,body:$b}){ discussion{ id number url } } }`,
+    { r: CONFIG.hub.repositoryId, c: CONFIG.hub.categoryId, t, b }
+  ).then((d) => d.createDiscussion.discussion);
+
+const updateDiscussion = (id, t, b) =>
+  hub(`mutation($id:ID!,$t:String!,$b:String!){ updateDiscussion(input:{discussionId:$id,title:$t,body:$b}){ discussion{ id } } }`, { id, t, b });
 
 const closeDiscussion = (id) =>
-  hub(
-    `mutation($id:ID!){ closeDiscussion(input:{discussionId:$id,reason:OUTDATED}){ discussion{ closed } } }`,
-    { id }
-  );
+  hub(`mutation($id:ID!){ closeDiscussion(input:{discussionId:$id,reason:OUTDATED}){ discussion{ closed } } }`, { id });
 
 const reopenDiscussion = (id) =>
   hub(`mutation($id:ID!){ reopenDiscussion(input:{discussionId:$id}){ discussion{ closed } } }`, { id });
 
 const commentOnDiscussion = (id, body) =>
-  hub(
-    `mutation($id:ID!,$b:String!){ addDiscussionComment(input:{discussionId:$id,body:$b}){ comment{ id } } }`,
-    { id, b: body }
-  );
+  hub(`mutation($id:ID!,$b:String!){ addDiscussionComment(input:{discussionId:$id,body:$b}){ comment{ id } } }`, { id, b: body });
 
 const commentOnIssue = (owner, id, body) =>
-  src(owner, `mutation($id:ID!,$b:String!){ addComment(input:{subjectId:$id,body:$b}){ clientMutationId } }`, {
-    id,
-    b: body,
-  });
+  src(owner, `mutation($id:ID!,$b:String!){ addComment(input:{subjectId:$id,body:$b}){ clientMutationId } }`, { id, b: body });
 
-// ---------------------------------------------------------------- sync
+// -------------------------------------------------------------- backlinks
 
-async function publish(issue, state, log) {
-  const block = extractBlock(issue.body);
-  if (!block) {
-    log(`  skip ${issue.repo}#${issue.number}: no ${BEGIN} block`);
-    return;
-  }
-  const title = issue.title;
-  const body = discussionBody(block, issue);
-
-  // never create without asking GitHub first
-  let disc = await findExistingDiscussion(issue.id);
-  const adopted = !!disc;
-  if (disc) {
-    log(`  adopting existing discussion #${disc.number} (state was missing it)`);
-  } else {
-    if (DRY) return log(`  would create discussion: "${title}"`);
-    disc = await createDiscussion(title, body);
-    log(`  created discussion #${disc.number} -> ${disc.url}`);
-  }
-
-  // checkpoint BEFORE backlinks: a crash here must not orphan the discussion
-  const rec = (state.synced[issue.id] = {
-    repo: issue.repo,
-    number: issue.number,
-    issueUrl: issue.url,
-    discussionId: disc.id,
-    discussionNumber: disc.number,
-    discussionUrl: disc.url,
-    closed: !!disc.closed,
-    lastBlock: block,
-    backlinks: adopted
-      ? await existingBacklinks(issue.id, disc.id, issue.repo.split("/")[0])
-      : { discussion: false, issue: false },
-    syncedAt: new Date().toISOString(),
-  });
-  saveState(state);
-
-  await ensureBacklinks(issue, rec, log);
-}
-
-/** Each backlink is tracked separately so a retry posts only what is missing. */
+/**
+ * A comment body is attacker-controlled, so a bare marker is not proof: any
+ * commenter could suppress the real backlink. Require the marker keyed to THIS
+ * target, and that we wrote it.
+ */
 async function ensureBacklinks(issue, rec, log) {
-  if (DRY) return;
-  if (!rec.backlinks?.discussion) {
-    await commentOnDiscussion(
-      rec.discussionId,
-      `${BACKLINK_MARK}\nTracking issue: [${issue.repo}#${issue.number}](${issue.url})\n\nThis thread is for **end-user feedback**. Implementation discussion belongs on the issue.`
+  const owner = issue.repo.split("/")[0];
+  const q = `query($id:ID!){ node(id:$id){
+    ... on Issue { comments(last:100){ nodes{ body author{ login } } } }
+    ... on Discussion { comments(last:100){ nodes{ body author{ login } } } }
+  }}`;
+  const mine = (d, mark, who) =>
+    (d?.node?.comments?.nodes || []).some(
+      (c) => c.body?.includes(mark) && (!who || c.author?.login === who)
     );
-    rec.backlinks.discussion = true;
-    saveState(state_ref);
-    log(`  backlink -> discussion`);
+
+  const [i, dsc, srcWho, hubWho] = await Promise.all([
+    src(owner, q, { id: issue.id }),
+    hub(q, { id: rec.discussionId }),
+    sourceIdentity(owner),
+    hubIdentity(),
+  ]);
+
+  if (!mine(dsc, backlinkMark("issue", issue.id), hubWho)) {
+    if (DRY) log(`  would backlink -> discussion`);
+    else {
+      await commentOnDiscussion(
+        rec.discussionId,
+        `${backlinkMark("issue", issue.id)}\nTracking issue: [${issue.repo}#${issue.number}](${issue.url})\n\nThis thread is for **end-user feedback**. Implementation discussion belongs on the issue.`
+      );
+      log(`  backlink -> discussion`);
+    }
   }
-  if (!rec.backlinks?.issue) {
-    await commentOnIssue(
-      issue.repo.split("/")[0],
-      issue.id,
-      `${BACKLINK_MARK}\nFeedback discussion opened: ${rec.discussionUrl}\n\nEnd users can comment there without following this issue's implementation detail.`
-    );
-    rec.backlinks.issue = true;
-    saveState(state_ref);
-    log(`  backlink -> issue`);
+  if (!mine(i, backlinkMark("discussion", rec.discussionId), srcWho)) {
+    if (DRY) log(`  would backlink -> issue`);
+    else {
+      await commentOnIssue(
+        owner,
+        issue.id,
+        `${backlinkMark("discussion", rec.discussionId)}\nFeedback discussion opened: ${rec.url}\n\nEnd users can comment there without following this issue's implementation detail.`
+      );
+      log(`  backlink -> issue`);
+    }
   }
 }
 
-let state_ref;
-
-async function mirror(issue, rec, log) {
-  const block = extractBlock(issue.body);
-  if (!block) {
-    log(`  WARN ${issue.repo}#${issue.number}: markers gone, refusing to overwrite live discussion`);
-    return;
-  }
-  if (block === rec.lastBlock) return;
-  if (DRY) return log(`  would update discussion #${rec.discussionNumber}`);
-  await updateDiscussion(rec.discussionId, issue.title, discussionBody(block, issue));
-  rec.lastBlock = block;
-  rec.syncedAt = new Date().toISOString();
-  log(`  mirrored edit -> discussion #${rec.discussionNumber}`);
-}
+// ------------------------------------------------------------------ run
 
 async function run() {
-  const log = (m) => console.log(m);
-  const state = loadState();
-  state_ref = state;
-  const label = CONFIG.feedbackLabel;
-
+  const log = console.log;
+  log(appMode ? "auth: hub token + source App (per-installation tokens)" : "auth: single token - LOCAL TESTING ONLY");
   log(`hub: ${CONFIG.hub.repo} category=${CONFIG.hub.categoryName}`);
-  log(`label: ${label}${DRY ? "  (DRY RUN)" : ""}`);
+  log(`label: ${CONFIG.feedbackLabel}${DRY ? "  (DRY RUN)" : ""}\n`);
+
+  const index = await buildIndex(log);
+  const seen = new Set();
 
   // 1. discovery - issues currently carrying the label
-  const seen = new Set();
   for (const repo of CONFIG.sources) {
     log(`\nsource ${repo}`);
     let issues;
     try {
-      issues = await labelledIssues(repo, label);
+      issues = await labelledIssues(repo, CONFIG.feedbackLabel);
     } catch (e) {
       log(`  ERROR reading ${repo}: ${e.message}`);
       continue;
     }
     log(`  ${issues.length} labelled issue(s)`);
+
     for (const issue of issues) {
       seen.add(issue.id);
-      const rec = state.synced[issue.id];
-      if (!rec) {
-        await publish(issue, state, log);
-      } else if (rec.closed) {
-        if (!DRY) {
-          await reopenDiscussion(rec.discussionId);
-          rec.closed = false;
-        }
-        log(`  relabelled -> reopened discussion #${rec.discussionNumber}`);
-        await mirror(issue, rec, log);
-      } else {
-        await mirror(issue, rec, log);
-        await ensureBacklinks(issue, rec, log);
+      const block = extractBlock(issue.body);
+      let rec = index.get(issue.id);
+
+      if (!block) {
+        log(`  ${issue.repo}#${issue.number}: no ${BEGIN} block${rec ? " - refusing to overwrite live discussion" : " - skipped"}`);
+        continue;
       }
+
+      if (!rec) {
+        if (DRY) {
+          log(`  would create discussion: "${issue.title}"`);
+          continue;
+        }
+        const d = await createDiscussion(issue.title, discussionBody(block, issue));
+        rec = { discussionId: d.id, number: d.number, url: d.url, closed: false, block };
+        index.set(issue.id, rec);
+        log(`  created discussion #${d.number} -> ${d.url}`);
+      } else if (rec.closed) {
+        if (!DRY) await reopenDiscussion(rec.discussionId);
+        rec.closed = false;
+        log(`  relabelled -> reopened discussion #${rec.number}`);
+      }
+
+      if (rec.block !== block) {
+        if (DRY) log(`  would mirror edit -> #${rec.number}`);
+        else {
+          await updateDiscussion(rec.discussionId, issue.title, discussionBody(block, issue));
+          log(`  mirrored edit -> discussion #${rec.number}`);
+        }
+        rec.block = block;
+      }
+
+      await ensureBacklinks(issue, rec, log);
     }
   }
 
-  // 2. reconciliation - everything we have synced, whatever its labels are now.
-  //    a query for *labelled* issues can never return one whose label was removed,
-  //    so closure is only detectable from our own records.
-  log(`\nreconciling ${Object.keys(state.synced).length} known discussion(s)`);
-  for (const [issueId, rec] of Object.entries(state.synced)) {
+  // 2. reconciliation - a search for *labelled* issues can never return one
+  //    whose label was removed, so closure is only visible from the index.
+  log(`\nreconciling ${index.size} tracked discussion(s)`);
+  for (const [issueId, rec] of index) {
     if (seen.has(issueId) || rec.closed) continue;
-    const res = await issueById(issueId, rec.repo.split("/")[0]);
+    const res = await issueById(issueId, CONFIG.sources[0].split("/")[0]);
 
-    // Losing sight of an issue is NOT evidence the label was removed. An App
-    // installation that was revoked, a repo that went private, or a transient
-    // error all look like "not found". Q13: uninstalling stops writes, it does
-    // not retract feedback. So we only ever close on a POSITIVE observation.
+    // Losing sight of an issue is not evidence the label was removed. A
+    // revoked installation, a repo gone private, or a transient error all look
+    // like "not found". Uninstalling stops writes; it does not retract
+    // feedback. Only ever close on a positive observation.
     if (!res.ok) {
-      log(`  ${rec.repo}#${rec.number}: not visible (${res.reason}) - leaving discussion untouched`);
+      log(`  #${rec.number}: issue not visible (${res.reason}) - leaving discussion untouched`);
       continue;
     }
-
-    // Label-only lifecycle (decision 11): the issue being closed is not a
-    // signal. Only the label's absence closes the discussion.
-    if (!res.issue.labels.includes(label)) {
-      if (!DRY) {
+    if (!res.issue.labels.includes(CONFIG.feedbackLabel)) {
+      if (DRY) log(`  would close #${rec.number}`);
+      else {
         await closeDiscussion(rec.discussionId);
-        rec.closed = true;
+        log(`  ${res.issue.repo}#${res.issue.number}: label gone -> closed discussion #${rec.number}`);
       }
-      log(`  ${rec.repo}#${rec.number}: label gone -> closed discussion #${rec.discussionNumber}`);
     }
   }
-
-  saveState(state);
-  log(`\nstate: ${Object.keys(state.synced).length} tracked${DRY ? " (not written)" : ""}`);
+  log(`\ndone`);
 }
 
 if (import.meta.main) await run();

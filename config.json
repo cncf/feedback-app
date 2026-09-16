@@ -8,6 +8,5 @@
   },
   "sources": [
     "cncf/feedback-app"
-  ],
-  "statePath": "state/synced.json"
+  ]
 }
