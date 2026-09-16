@@ -171,24 +171,36 @@ App by authorizing it; that grants the App access to that org and requires no
 secret on their side. Only *minting a token in their CI* requires the key. That
 asymmetry is what makes the next pattern work.
 
-### Carrier patterns, with blast radius
+### Carrier patterns, with key custody
 
-| Pattern | Key lives in | Blast radius | Inbound events | Hosting |
-|---|---|---|---|---|
-| Workflow in every source repo | every source org | **whole App** — every installation, via any trusted writer or compromised action in any participating org | `on: issues` locally | none |
-| Hub-only workflows + polling sources | hub org only | one org you control | `on: discussion` in hub; source side polled | none |
-| Hosted webhook service | one server | one server you control | all 15 actions, both sides | server + public endpoint |
-| Per-org Apps | each org, own App | one org each | local | none, but N Apps to register and rotate |
+Two different things get muddled here, so they get separate columns:
 
-**Hub-only is usually the right shape for a many-source topology.** The App is
-installed on source orgs so it can read their issues and write back, but the key
-never leaves the hub: hub workflows poll source repos for the feedback label and
-handle local `on: discussion` events natively. You trade issue-side latency for
-keeping a single high-value secret in one place.
+- **Exposure surface** — how many trust domains hold a copy of the key, i.e. how
+  many independent places have to stay uncompromised.
+- **Compromise impact** — what an attacker gets once *any* one of them leaks.
 
-**Per-org Apps** remove the shared blast radius but multiply registration, key
-rotation, and installation management by the number of orgs — rarely worth it
-below a large N, and an operational burden forever after.
+A single shared App key has the same impact wherever it sits: whoever reads it
+can mint tokens for **every** installation of that App. Concentrating it reduces
+how many places can leak it; it does not reduce what a leak costs.
+
+| Pattern | Key lives in | Exposure surface | Compromise impact | Inbound events | Hosting |
+|---|---|---|---|---|---|
+| Workflow in every source repo | every source org | **N trust domains** you don't administer | whole App — every installation | `on: issues` locally | none |
+| Hub-only workflows + polling sources | hub org only | 1 trust domain you control | whole App — every installation | `on: discussion` in hub; source side polled | none |
+| Hosted webhook service | one server | 1 trust domain you control | whole App — every installation | all 15 actions, both sides | server + public endpoint |
+| Per-org Apps | each org, own App | N trust domains | **one org each** — the only pattern that truly contains it | local | none, but N Apps to register and rotate |
+
+**Hub-only is usually the right shape for a many-source topology**, but be
+precise about why: it cuts the exposure surface from N orgs to one you control,
+and it removes the need for third parties to hold your secret at all. It does
+**not** contain the damage — a hub leak is still a whole-App compromise. The App
+is installed on source orgs so it can read issues and write back, while hub
+workflows poll source repos and handle local `on: discussion` events natively.
+You trade issue-side latency for a single custodian.
+
+**Per-org Apps** are the only shape where compromise stays local, because the
+keys are genuinely different keys. The cost is N registrations, N installations,
+and N rotations, forever.
 
 ### What an event-triggered Actions carrier does not cover
 
