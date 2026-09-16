@@ -1,12 +1,18 @@
-# cncf-feedback
+# feedback-app
 
-Reviving the CNCF end-user feedback loop proposal (Bob Killen, 2023-10-14 → 2024-09-05). Source doc archived at `docs/proposal-2024-killen.md` — treat it as a historical artifact, not current truth.
+Reviving the CNCF end-user feedback loop: an app that syncs designated project issues into GitHub Discussions in a central feedback surface, so end users have one place to give feedback.
+
+Originally proposed by Bob Killen (drafted 2023-10-14, last updated 2024-09-05). It reached the CNCF End User TAB as the `area/feedback-loops` workstream, then was parked in December 2025. Nothing of the design shipped. This repo is the revival.
+
+- Source proposal, archived verbatim: `docs/proposal-2024-killen.md` — a historical artifact, not current truth.
+- Primary-source research: `docs/research/`
+- The route: [the wayfinder map](https://github.com/cncf/feedback-app/issues/1)
 
 ## Agent skills
 
 ### Issue tracker
 
-Issues live in GitHub Issues on `castrojo/cncf-feedback`, driven with the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues live in GitHub Issues on `cncf/feedback-app`, driven with the `gh` CLI and the GitHub MCP tools. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
@@ -15,3 +21,7 @@ Default five-role vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `
 ### Domain docs
 
 Single-context: `CONTEXT.md` at the root, ADRs under `docs/adr/`. See `docs/agents/domain.md`.
+
+## Source discipline
+
+No GitHub API shape from memory. Context7 (`/github/docs`) or the live GraphQL schema, every time, cited at the claim. The design must respect GitHub's documented rate limits, App permission model, and Acceptable Use Policies — this is well-documented territory and there is no excuse for guessing.
