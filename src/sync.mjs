@@ -157,13 +157,13 @@ async function hubIdentity() {
   } catch {
     /* installation token - fall through to configured bot login */
   }
-  if (CONFIG.hub.botLogin) return (_hubWho = CONFIG.hub.botLogin);
+  if (CONFIG.hubBotLogin) return (_hubWho = CONFIG.hubBotLogin);
   try {
-    throw new Error("viewer unavailable and hub.botLogin unset");
+    throw new Error("viewer unavailable and hubBotLogin unset");
   } catch (e) {
     throw new Error(
       `cannot establish hub identity (${e.message.slice(0, 60)}). ` +
-        `Set hub.botLogin in config.json to the App's bot login, e.g. "cncf-feedback[bot]". ` +
+        `Set hubBotLogin in config.json to the App's bot login, e.g. "cncf-feedback[bot]". ` +
         `Refusing to run without provenance checks.`
     );
   }
@@ -184,16 +184,16 @@ async function sourceIdentity(owner) {
   } catch {
     /* installation token */
   }
-  if (CONFIG.source?.botLogin) {
-    _srcWho.set(owner, CONFIG.source.botLogin);
-    return CONFIG.source.botLogin;
+  if (CONFIG.sourceBotLogin) {
+    _srcWho.set(owner, CONFIG.sourceBotLogin);
+    return CONFIG.sourceBotLogin;
   }
   try {
-    throw new Error("viewer unavailable and source.botLogin unset");
+    throw new Error("viewer unavailable and sourceBotLogin unset");
   } catch (e) {
     throw new Error(
       `cannot establish source identity for "${owner}" (${e.message.slice(0, 60)}). ` +
-        `Set source.botLogin in config.json. Refusing to run without provenance checks.`
+        `Set sourceBotLogin in config.json. Refusing to run without provenance checks.`
     );
   }
   if (!who) throw new Error(`source identity for "${owner}" resolved empty - refusing to run`);
@@ -232,9 +232,9 @@ const discussionBody = (block, issue, bl = "") =>
  * configured category and authored by us are trusted: the marker is public
  * text, so anyone could paste it into an open category to hijack adoption.
  */
-async function buildIndex(log) {
+async function buildIndex(project, log) {
   const us = await hubIdentity();
-  const [owner, name] = CONFIG.hub.repo.split("/");
+  const [owner, name] = project.hub.repo.split("/");
   const index = new Map();
   let cursor = null,
     page = 0,
@@ -255,7 +255,7 @@ async function buildIndex(log) {
     for (const n of conn.nodes) {
       const m = n.body?.match(MARKER_RE);
       if (!m) continue;
-      if (n.category?.id !== CONFIG.hub.categoryId) {
+      if (n.category?.id !== project.hub.categoryId) {
         rejected++;
         log(`  ignoring #${n.number}: marker in category "${n.category?.name}"`);
         continue;
@@ -280,7 +280,7 @@ async function buildIndex(log) {
     if (!conn.pageInfo.hasNextPage) break;
     cursor = conn.pageInfo.endCursor;
   }
-  log(`index: ${index.size} tracked across ${page} page(s)${rejected ? `, ${rejected} rejected` : ""}`);
+  log(`  index: ${index.size} tracked across ${page} page(s)${rejected ? `, ${rejected} rejected` : ""}`);
   return index;
 }
 
@@ -328,10 +328,10 @@ async function issueById(id, owner) {
 
 // ------------------------------------------------------------ mutations
 
-const createDiscussion = (t, b) =>
+const createDiscussion = (project, t, b) =>
   hub(
     `mutation($r:ID!,$c:ID!,$t:String!,$b:String!){ createDiscussion(input:{repositoryId:$r,categoryId:$c,title:$t,body:$b}){ discussion{ id number url } } }`,
-    { r: CONFIG.hub.repositoryId, c: CONFIG.hub.categoryId, t, b }
+    { r: project.hub.repositoryId, c: project.hub.categoryId, t, b }
   ).then((d) => d.createDiscussion.discussion);
 
 const updateDiscussion = (id, t, b) =>
@@ -436,107 +436,101 @@ async function ensureBacklinks(issue, rec, block, log) {
 async function run() {
   const log = console.log;
   log(appMode ? "auth: hub token + source App (per-installation tokens)" : "auth: single token - LOCAL TESTING ONLY");
-  log(`hub: ${CONFIG.hub.repo} category=${CONFIG.hub.categoryName}`);
-  log(`label: ${CONFIG.feedbackLabel}${DRY ? "  (DRY RUN)" : ""}\n`);
+  log(`label: ${CONFIG.feedbackLabel}${DRY ? "  (DRY RUN)" : ""}`);
 
-  const index = await buildIndex(log);
-  const seen = new Set();
   const failures = [];
+  let active = 0;
 
-  // 1. discovery - issues currently carrying the label
-  for (const repo of CONFIG.sources) {
-    log(`\nsource ${repo}`);
-    let issues;
-    try {
-      issues = await labelledIssues(repo, CONFIG.feedbackLabel);
-    } catch (e) {
-      // A source we cannot read is a failed run, not a quiet one. Keep going so
-      // other sources still sync, but the process must exit nonzero - otherwise
-      // a missing installation shows up as a green scheduled run that synced
-      // nothing at all.
-      log(`  ERROR reading ${repo}: ${e.message}`);
-      failures.push(`${repo}: ${e.message}`);
+  for (const project of CONFIG.projects) {
+    if (!project.sources?.length) {
+      log(`\n${project.name}: provisioned, no sources yet - skipping`);
       continue;
     }
-    log(`  ${issues.length} labelled issue(s)`);
+    active++;
+    log(`\n${project.name} -> ${project.hub.repo} [${project.hub.categoryName}]`);
 
-    for (const issue of issues) {
-      seen.add(issue.id);
-      const block = extractBlock(issue.body);
-      let rec = index.get(issue.id);
+    const index = await buildIndex(project, log);
+    const seen = new Set();
 
-      if (!block) {
-        log(`  ${issue.repo}#${issue.number}: no ${BEGIN} block${rec ? " - refusing to overwrite live discussion" : " - skipped"}`);
+    for (const repo of project.sources) {
+      let issues;
+      try {
+        issues = await labelledIssues(repo, CONFIG.feedbackLabel);
+      } catch (e) {
+        log(`  ERROR reading ${repo}: ${e.message}`);
+        failures.push(`${project.name}/${repo}: ${e.message}`);
         continue;
       }
+      log(`  source ${repo}: ${issues.length} labelled issue(s)`);
 
-      if (!rec) {
-        if (DRY) {
-          log(`  would create discussion: "${issue.title}"`);
+      for (const issue of issues) {
+        seen.add(issue.id);
+        const block = extractBlock(issue.body);
+        let rec = index.get(issue.id);
+
+        if (!block) {
+          log(`    ${issue.repo}#${issue.number}: no ${BEGIN} block${rec ? " - refusing to overwrite live discussion" : " - skipped"}`);
           continue;
         }
-        const d = await createDiscussion(issue.title, discussionBody(block, issue));
-        rec = { discussionId: d.id, number: d.number, title: issue.title, url: d.url, closed: false, block, bl: "" };
-        index.set(issue.id, rec);
-        log(`  created discussion #${d.number} -> ${d.url}`);
-      } else if (rec.closed) {
-        if (!DRY) await reopenDiscussion(rec.discussionId);
-        rec.closed = false;
-        log(`  relabelled -> reopened discussion #${rec.number}`);
-      }
 
-      // Title is copied at creation, so it has to track edits too - otherwise a
-      // renamed issue leaves the discussion advertising the old name forever.
-      const titleChanged = rec.title !== undefined && rec.title !== issue.title;
-      if (rec.block !== block || titleChanged) {
-        const what = [rec.block !== block && "body", titleChanged && "title"].filter(Boolean).join("+");
-        if (DRY) log(`  would mirror ${what} -> #${rec.number}`);
-        else {
-          await updateDiscussion(rec.discussionId, issue.title, discussionBody(block, issue, rec.bl || ""));
-          log(`  mirrored ${what} -> discussion #${rec.number}`);
+        if (!rec) {
+          if (DRY) { log(`    would create discussion: "${issue.title}"`); continue; }
+          const d = await createDiscussion(project, issue.title, discussionBody(block, issue));
+          rec = { discussionId: d.id, number: d.number, title: issue.title, url: d.url, closed: false, block, bl: "" };
+          index.set(issue.id, rec);
+          log(`    created discussion #${d.number} -> ${d.url}`);
+        } else if (rec.closed) {
+          if (!DRY) await reopenDiscussion(rec.discussionId);
+          rec.closed = false;
+          log(`    relabelled -> reopened discussion #${rec.number}`);
         }
-        rec.block = block;
-        rec.title = issue.title;
-      }
 
-      await ensureBacklinks(issue, rec, block, log);
+        const titleChanged = rec.title !== undefined && rec.title !== issue.title;
+        if (rec.block !== block || titleChanged) {
+          const what = [rec.block !== block && "body", titleChanged && "title"].filter(Boolean).join("+");
+          if (DRY) log(`    would mirror ${what} -> #${rec.number}`);
+          else {
+            await updateDiscussion(rec.discussionId, issue.title, discussionBody(block, issue, rec.bl || ""));
+            log(`    mirrored ${what} -> discussion #${rec.number}`);
+          }
+          rec.block = block;
+          rec.title = issue.title;
+        }
+
+        await ensureBacklinks(issue, rec, block, log);
+      }
+    }
+
+    // Reconciliation: a query for labelled issues can never return one whose
+    // label was just removed, so closure is only visible from the index.
+    for (const [issueId, rec] of index) {
+      if (seen.has(issueId) || rec.closed) continue;
+      if (!rec.repo) {
+        log(`    #${rec.number}: legacy marker without repo - re-label the issue to upgrade it`);
+        continue;
+      }
+      const res = await issueById(issueId, rec.repo.split("/")[0]);
+      if (!res.ok) {
+        log(`    #${rec.number}: issue not visible (${res.reason}) - leaving discussion untouched`);
+        continue;
+      }
+      if (!res.issue.labels.includes(CONFIG.feedbackLabel)) {
+        if (DRY) log(`    would close #${rec.number}`);
+        else {
+          await closeDiscussion(rec.discussionId);
+          log(`    ${res.issue.repo}#${res.issue.number}: label gone -> closed discussion #${rec.number}`);
+        }
+      }
     }
   }
 
-  // 2. reconciliation - a search for *labelled* issues can never return one
-  //    whose label was removed, so closure is only visible from the index.
-  log(`\nreconciling ${index.size} tracked discussion(s)`);
-  for (const [issueId, rec] of index) {
-    if (seen.has(issueId) || rec.closed) continue;
-    // owner comes from the marker, not from a guess at the first source
-    if (!rec.repo) {
-      log(`  #${rec.number}: legacy marker without repo - re-label the issue to upgrade it`);
-      continue;
-    }
-    const res = await issueById(issueId, rec.repo.split("/")[0]);
-
-    // Losing sight of an issue is not evidence the label was removed. A
-    // revoked installation, a repo gone private, or a transient error all look
-    // like "not found". Uninstalling stops writes; it does not retract
-    // feedback. Only ever close on a positive observation.
-    if (!res.ok) {
-      log(`  #${rec.number}: issue not visible (${res.reason}) - leaving discussion untouched`);
-      continue;
-    }
-    if (!res.issue.labels.includes(CONFIG.feedbackLabel)) {
-      if (DRY) log(`  would close #${rec.number}`);
-      else {
-        await closeDiscussion(rec.discussionId);
-        log(`  ${res.issue.repo}#${res.issue.number}: label gone -> closed discussion #${rec.number}`);
-      }
-    }
-  }
+  log(`\n${active}/${CONFIG.projects.length} project(s) active`);
   if (failures.length) {
-    log(`\nFAILED: ${failures.length} source(s) could not be processed`);
+    log(`FAILED: ${failures.length} source(s) could not be processed`);
     for (const f of failures) log(`  - ${f}`);
     process.exit(1);
   }
-  log(`\ndone`);
+  log("done");
 }
 
 if (import.meta.main) await run();

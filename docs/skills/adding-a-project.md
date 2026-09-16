@@ -39,8 +39,11 @@ click Install.
 | Issues | **off** | an issue tracker here splits the conversation the hub exists to consolidate, and collects support tickets aimed at a repo with no code |
 | Wiki | **off** | unowned documentation surface, drifts immediately |
 | Projects | **off** | planning belongs in the project's own org |
-| Forking | **off** | nothing to fork; a fork only creates a confusing lookalike |
-| Pull requests | **off** | `has_pull_requests: false` on `PATCH /repos/{owner}/{repo}`; there is no code here to review |
+| Pull requests | **off** | `has_pull_requests: false`, plus `pull_request_creation_policy: collaborators_only` |
+| Actions | **off** | separate API: `PUT /repos/{o}/{r}/actions/permissions` `{enabled:false}`. On by default, and there is no code here to build |
+| Pages | **off** | `has_pages` — off by default; verify |
+| Downloads | **off** | legacy `has_downloads` surface |
+| Public forking | *not disableable* | `allow_forking` governs **private** forks only. A public repo can always be forked. A fork carries no discussions, so it is an empty lookalike — a naming annoyance, not a leak |
 
 Pull requests **can** be disabled outright — `has_pull_requests: false`, with
 `pull_request_creation_policy: collaborators_only` as a second line of defence.
@@ -181,6 +184,8 @@ is idempotent and fails loudly when settings do not apply:
 |---|---|
 | "I'll add a README so the repo looks welcoming." | Put the welcome in a pinned discussion, where the audience is. |
 | "PRs can't be turned off on GitHub." | They can: `has_pull_requests: false`. Check the current schema rather than trusting recall — this field is newer than most people's mental model. |
+| "`allow_forking: false` stops people forking it." | It governs **private** forks only. Public repos can always be forked; the fork carries no discussions. |
+| "Repo settings cover everything." | Actions has its own endpoint and defaults to on. |
 | "Leave issues on, people might file useful ones." | They will file support requests in a repo with no code and no maintainers watching. |
 | "The category is called Project Feedback so it must be the feedback one." | Name is not format. Verify in settings or lose the moderation guarantee. |
 | "I'll grant repo access in the UI, it's quicker." | CLOWarden reconciles it away. Use the PR. |
@@ -196,8 +201,8 @@ is idempotent and fails loudly when settings do not apply:
 
 ## Verification
 
-- [ ] `provision-project.sh` exits 0 and reports `true,false,false,false,false`
-- [ ] `has_pull_requests` is false
+- [ ] `provision-project.sh` exits 0 and reports `true,false,false,false,false,false,false`
+- [ ] `has_pull_requests` is false and Actions is disabled
 - [ ] Target category confirmed announcement-format in settings
 - [ ] Access recorded in `access-control.yaml` via merged PR
 - [ ] Source App installed by the project, not by staff on their behalf

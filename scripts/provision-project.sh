@@ -37,8 +37,19 @@ for P in "$@"; do
     -F has_projects=false \
     -F has_pull_requests=false \
     -F pull_request_creation_policy=collaborators_only \
-    -F allow_forking=false \
+    -F has_downloads=false \
     --jq '"  discussions=\(.has_discussions) issues=\(.has_issues) wiki=\(.has_wiki) projects=\(.has_projects) forking=\(.allow_forking)"'
+
+  # Actions is a separate API and is ON by default. A feedback repo has no code
+  # to build, so a workflow here is only an attack surface.
+  gh api --method PUT "repos/$ORG/$P/actions/permissions" -F enabled=false \
+    && echo "  actions disabled" \
+    || echo "  WARN: could not disable Actions (needs admin)"
+
+  # NOT settable: public forking. `allow_forking` controls PRIVATE forks only
+  # ("Either true to allow private forks, or false to prevent private forks").
+  # A public repo can always be forked; that is a platform property, not drift.
+  # A fork carries no discussions, so the blast radius is an empty lookalike.
 
   # Pull requests are disabled outright via has_pull_requests. Keeping the repo
   # empty is belt and braces, not the mechanism.
@@ -48,9 +59,9 @@ for P in "$@"; do
 
   # Verify, do not assume. A PATCH that silently no-ops leaves a repo that looks
   # provisioned and is not.
-  state=$(gh api "repos/$ORG/$P" --jq '[.has_discussions, .has_issues, .has_wiki, .has_projects, .has_pull_requests] | @csv')
-  if [[ "$state" != "true,false,false,false,false" ]]; then
-    echo "  FATAL: settings did not apply (discussions,issues,wiki,projects,pull_requests = $state)" >&2
+  state=$(gh api "repos/$ORG/$P" --jq '[.has_discussions, .has_issues, .has_wiki, .has_projects, .has_pull_requests, .has_pages, .has_downloads] | @csv')
+  if [[ "$state" != "true,false,false,false,false,false,false" ]]; then
+    echo "  FATAL: settings did not apply (discussions,issues,wiki,projects,prs,pages,downloads = $state)" >&2
     fail=1
     continue
   fi

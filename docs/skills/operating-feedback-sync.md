@@ -40,20 +40,34 @@ Both Apps must be **public** so orgs other than the owner can install them.
 
 ## Configuration
 
+One repo per project means the config is a **routing table**: each project's
+source repos map to that project's own hub repo.
+
 ```json
 {
   "feedbackLabel": "feedback",
-  "hub": {
-    "repo": "cncf-projects/cert-manager",
-    "repositoryId": "R_...",
-    "categoryName": "Announcements",
-    "categoryId": "DIC_...",
-    "botLogin": "cncf-feedback[bot]"
-  },
-  "source": { "botLogin": "cncf-feedback-source[bot]" },
-  "sources": ["cncf/feedback-app"]
+  "hubOrg": "cncf-projects",
+  "hubBotLogin": "cncf-feedback[bot]",
+  "sourceBotLogin": "cncf-feedback-source[bot]",
+  "projects": [
+    {
+      "name": "cert-manager",
+      "sources": ["cert-manager/cert-manager"],
+      "hub": {
+        "repo": "cncf-projects/cert-manager",
+        "repositoryId": "R_...",
+        "categoryName": "Announcements",
+        "categoryId": "DIC_..."
+      }
+    }
+  ]
 }
 ```
+
+**An empty `sources` array means provisioned but not syncing** — the hub repo
+exists and is locked down, but the project has not installed the source App yet.
+The run reports these as skipped rather than treating them as errors, so a
+half-onboarded project is visible without being noisy.
 
 Resolve IDs with the user credential, never with the App token:
 
