@@ -326,39 +326,78 @@ const commentOnIssue = (owner, id, body) =>
  * commenter could suppress the real backlink. Require the marker keyed to THIS
  * target, and that we wrote it.
  */
+/**
+ * Look for a backlink we already posted. Only called when the marker says the
+ * backlink is missing - which, after the first successful sync, means either a
+ * genuinely missing backlink or a crash between "comment posted" and "marker
+ * updated". Paginates, because on a busy issue the comment is not in the last
+ * page.
+ */
+async function backlinkExists(kind, hostId, mark, expectedAuthor, useSrc, owner) {
+  const q = `query($id:ID!,$c:String){ node(id:$id){
+    ... on Issue { comments(first:100,after:$c){ pageInfo{hasNextPage endCursor} nodes{ body author{ login } } } }
+    ... on Discussion { comments(first:100,after:$c){ pageInfo{hasNextPage endCursor} nodes{ body author{ login } } } }
+  }}`;
+  let cursor = null;
+  for (;;) {
+    const d = useSrc ? await src(owner, q, { id: hostId, c: cursor }) : await hub(q, { id: hostId, c: cursor });
+    const conn = d?.node?.comments;
+    if (!conn) return false;
+    if (conn.nodes.some((c) => c.body?.includes(mark) && c.author?.login === expectedAuthor)) return true;
+    if (!conn.pageInfo.hasNextPage) return false;
+    cursor = conn.pageInfo.endCursor;
+  }
+}
+
+/**
+ * Posting a comment and recording that fact are writes to two different
+ * resources, so they cannot be made atomic. Two mitigations:
+ *   1. the marker is updated immediately after EACH comment, so the crash
+ *      window is one write wide rather than two;
+ *   2. when the marker says a backlink is missing, verify against the actual
+ *      comments before posting - that closes the window entirely at the cost
+ *      of a scan that only runs when something is genuinely incomplete.
+ */
 async function ensureBacklinks(issue, rec, block, log) {
   const owner = issue.repo.split("/")[0];
-  let bl = rec.bl || "";
+  const persist = async (bl) => {
+    await updateDiscussion(rec.discussionId, issue.title, discussionBody(block, issue, bl));
+    rec.bl = bl;
+  };
 
-  if (!bl.includes("d")) {
-    if (DRY) log(`  would backlink -> discussion`);
+  if (!(rec.bl || "").includes("d")) {
+    const mark = backlinkMark("issue", issue.id);
+    const already = await backlinkExists("discussion", rec.discussionId, mark, await hubIdentity(), false);
+    if (already) {
+      log(`  backlink -> discussion already present, recording it`);
+      if (!DRY) await persist((rec.bl || "") + "d");
+    } else if (DRY) log(`  would backlink -> discussion`);
     else {
       await commentOnDiscussion(
         rec.discussionId,
-        `${backlinkMark("issue", issue.id)}\nTracking issue: [${issue.repo}#${issue.number}](${issue.url})\n\nThis thread is for **end-user feedback**. Implementation discussion belongs on the issue.`
+        `${mark}\nTracking issue: [${issue.repo}#${issue.number}](${issue.url})\n\nThis thread is for **end-user feedback**. Implementation discussion belongs on the issue.`
       );
-      bl += "d";
+      await persist((rec.bl || "") + "d");
       log(`  backlink -> discussion`);
     }
   }
 
-  if (!bl.includes("i")) {
-    if (DRY) log(`  would backlink -> issue`);
+  if (!(rec.bl || "").includes("i")) {
+    const mark = backlinkMark("discussion", rec.discussionId);
+    const already = await backlinkExists("issue", issue.id, mark, await sourceIdentity(owner), true, owner);
+    if (already) {
+      log(`  backlink -> issue already present, recording it`);
+      if (!DRY) await persist((rec.bl || "") + "i");
+    } else if (DRY) log(`  would backlink -> issue`);
     else {
       await commentOnIssue(
         owner,
         issue.id,
-        `${backlinkMark("discussion", rec.discussionId)}\nFeedback discussion opened: ${rec.url}\n\nEnd users can comment there without following this issue's implementation detail.`
+        `${mark}\nFeedback discussion opened: ${rec.url}\n\nEnd users can comment there without following this issue's implementation detail.`
       );
-      bl += "i";
+      await persist((rec.bl || "") + "i");
       log(`  backlink -> issue`);
     }
-  }
-
-  // persist the flag into the discussion body - the only durable, trusted store
-  if (!DRY && bl !== (rec.bl || "")) {
-    await updateDiscussion(rec.discussionId, issue.title, discussionBody(block, issue, bl));
-    rec.bl = bl;
   }
 }
 
