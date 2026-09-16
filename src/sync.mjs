@@ -136,9 +136,19 @@ const src = async (owner, q, v) => gqlWith(await sourceTokenFor(owner), q, v);
 let _hubWho;
 async function hubIdentity() {
   if (_hubWho !== undefined) return _hubWho;
-  if (CONFIG.hub.botLogin) return (_hubWho = CONFIG.hub.botLogin);
+  // Prefer what the token actually is. `viewer` resolves for user tokens and
+  // fails for installation tokens; only then fall back to the configured bot
+  // login. Reading config first would break local runs by comparing a human
+  // author against the bot name.
   try {
     _hubWho = (await hub(`{ viewer { login } }`)).viewer.login;
+    if (_hubWho) return _hubWho;
+  } catch {
+    /* installation token - fall through to configured bot login */
+  }
+  if (CONFIG.hub.botLogin) return (_hubWho = CONFIG.hub.botLogin);
+  try {
+    throw new Error("viewer unavailable and hub.botLogin unset");
   } catch (e) {
     throw new Error(
       `cannot establish hub identity (${e.message.slice(0, 60)}). ` +
@@ -153,13 +163,22 @@ async function hubIdentity() {
 const _srcWho = new Map();
 async function sourceIdentity(owner) {
   if (_srcWho.has(owner)) return _srcWho.get(owner);
+  let who;
+  try {
+    who = (await src(owner, `{ viewer { login } }`)).viewer.login;
+    if (who) {
+      _srcWho.set(owner, who);
+      return who;
+    }
+  } catch {
+    /* installation token */
+  }
   if (CONFIG.source?.botLogin) {
     _srcWho.set(owner, CONFIG.source.botLogin);
     return CONFIG.source.botLogin;
   }
-  let who;
   try {
-    who = (await src(owner, `{ viewer { login } }`)).viewer.login;
+    throw new Error("viewer unavailable and source.botLogin unset");
   } catch (e) {
     throw new Error(
       `cannot establish source identity for "${owner}" (${e.message.slice(0, 60)}). ` +

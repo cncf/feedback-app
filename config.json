@@ -5,7 +5,7 @@
     "repositoryId": "R_kgDOMwRpvg",
     "categoryName": "Announcements",
     "categoryId": "DIC_kwDOMwRpvs4CmnZW",
-    "botLogin": null
+    "botLogin": "cncf-feedback[bot]"
   },
   "source": {
     "botLogin": null
@@ -14,5 +14,6 @@
     "cncf/feedback-app"
   ],
   "_note": "botLogin must be set to '<app-slug>[bot]' before running with App tokens; installation tokens cannot resolve viewer.",
-  "_categoryNote": "Decision 9 requires an ANNOUNCEMENT-format category so only maintainers and the App can start threads while anyone may reply. The GraphQL API does not expose category format (only isAnswerable), so format cannot be verified programmatically. 'Announcements' is announcement-format by default; 'Project Feedback' (DIC_kwDOMwRpvs4CmnZX) is the better name but its format is UNVERIFIED. Check it in repo settings and, if it is announcement-format, switch categoryId to it."
+  "_categoryNote": "Decision 9 requires an ANNOUNCEMENT-format category so only maintainers and the App can start threads while anyone may reply. The GraphQL API does not expose category format (only isAnswerable), so format cannot be verified programmatically. 'Announcements' is announcement-format by default; 'Project Feedback' (DIC_kwDOMwRpvs4CmnZX) is the better name but its format is UNVERIFIED. Check it in repo settings and, if it is announcement-format, switch categoryId to it.",
+  "_botNote": "hub.botLogin is the App slug + '[bot]'. Installation tokens cannot resolve `viewer`, so provenance checks read this. It MUST match the actual commenter login or the index will reject our own discussions. source.botLogin stays null until the source App is registered."
 }

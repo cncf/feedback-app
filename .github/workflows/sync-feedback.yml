@@ -55,15 +55,15 @@ jobs:
       # Split identities (decision 14). Two Apps, two installations, two keys —
       # both custodied here, neither distributed to participating orgs.
       #
-      # Hub App: discussions:write, installed on the hub org only.
+      # Hub App: discussions:write, installed on cncf-projects (the feedback org).
       - uses: actions/create-github-app-token@v3
         id: hub-token
         if: steps.cfg.outputs.ready == 'true'
         with:
           app-id: ${{ vars.HUB_APP_ID }}
           private-key: ${{ secrets.HUB_APP_PRIVATE_KEY }}
-          owner: cncf
-          repositories: cncf-feedback
+          owner: cncf-projects
+          repositories: cert-manager
 
       # Source App: issues:read + issues:write, installed by each participating
       # project on their own org.
