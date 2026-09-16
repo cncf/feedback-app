@@ -2,7 +2,7 @@
 
 Research date: **2026-09-16**. Scope: does GitHub in 2026 still require the Issue→Discussion sync App that the 2024 proposal designed, or has the platform absorbed it?
 
-Verification note (read this before trusting a "yes"): this research ran in a **read-only, no-shell environment**. No `gh api` calls were possible. Every claim below is therefore grounded in official GitHub sources — the schema-generated GraphQL reference on docs.github.com, the REST/OpenAPI-generated app-permission reference, docs.github.com articles, the github.blog changelog, and the live GitHub API via MCP tools. Two live API facts were obtained via the GitHub MCP server and are labelled as such. Anything not traceable to a primary source is marked **unverified**.
+Verification note (read this before trusting a "yes"): this document was **researched** in a read-only, no-shell environment, then its execution half was **completed in the parent session** on the same day against the real repo. Doc-grounded claims cite official GitHub sources — the schema-generated GraphQL reference, the REST/OpenAPI-generated app-permission reference, docs.github.com articles, and the github.blog changelog. Claims marked *executed* below were run live with `gh api` against `cncf/feedback-app` (the repo was renamed and transferred from `castrojo/cncf-feedback` to the `cncf` org after the research ran). One residual gap remains — the App-token permission mapping — and it is tracked, not hand-waved. Anything not traceable to a primary source or an executed call is marked **unverified**.
 
 ---
 
@@ -173,29 +173,25 @@ Two caveats, both real:
 
 ---
 
-## Execution proof: what could not be run, and why
+## Execution proof: what was run
 
-The acceptance criteria asked for `gh api` calls against `castrojo/cncf-feedback`. Two blockers, both stated plainly rather than worked around:
+The research agent had no shell, so the parent session ran the execution half on **2026-09-16** against `cncf/feedback-app` (same repo as `castrojo/cncf-feedback`, since transferred to the `cncf` org and renamed). Discussions were enabled on it first — the research-time observation `"has_discussions": false` is therefore obsolete, not a standing blocker.
 
-1. **No shell in this environment.** This research agent had read/grep/glob/web + MCP tool access only; there was no command execution tool, so neither `gh api graphql` introspection nor any `gh api` call could be issued.
-2. **The target repo has Discussions disabled.** Live fact from the GitHub MCP server (`search_repositories`, `repo:castrojo/cncf-feedback`, 2026-09-16): `"has_discussions": false` (also `"has_issues": true`, `"open_issues_count": 12`, `"visibility": "public"`, created `2026-09-16T17:24:52Z`). `createDiscussion` against this repo would fail regardless of credentials until Discussions is enabled in repo settings.
+**Executed — live schema introspection:**
 
-Every "yes" in the capability table is consequently backed by an official documentation URL — in most cases the schema-generated GraphQL reference, which is the live schema rendered. The one live-API-derived fact in this document is the `castrojo/cncf-feedback` metadata above.
+- `{ __type(name:"Labelable"){ possibleTypes{ name } } }` → `Discussion`, `Issue`, `PullRequest`. Confirms a discussion node id is a valid `labelableId`.
+- `{ __type(name:"Discussion"){ interfaces{ name } } }` → `Closable Comment Deletable Labelable Lockable Node Reactable RepositoryNode Subscribable Updatable Votable`. Confirms the schema-generated reference and refutes the stale hand-written guide.
+- `{ __type(name:"Mutation"){ fields{ name } } }` filtered to discussions → `addDiscussionComment addDiscussionPollVote closeDiscussion createDiscussion deleteDiscussion deleteDiscussionComment markDiscussionCommentAsAnswer reopenDiscussion unmarkDiscussionCommentAsAnswer updateDiscussion updateDiscussionComment`. **No `convertIssueToDiscussion`, no `transferDiscussion`** — the table's two most consequential "No" rows are now proven by introspection rather than inferred from absent docs.
+- `Discussion` field probe → `category`, `closed`, `closedAt`, `labels`, `upvoteCount`, `viewerCanUpvote`, `viewerHasUpvoted`. The proposal's ranking signal is queryable.
 
-**Recommended execution checklist** for whoever has a shell, to convert the doc-backed "yes" rows into executed proof (this is the honest residual):
+**Executed — write path, end to end:**
 
-```bash
-# 0. enable Discussions on the test repo first (Settings → Features → Discussions)
-# 1. prove the mutation shape from the live schema, not from docs
-gh api graphql -f query='{ __type(name:"CreateDiscussionInput"){ inputFields{ name type{ kind name ofType{ name } } } } }'
-gh api graphql -f query='{ __type(name:"Labelable"){ possibleTypes{ name } } }'
-gh api graphql -f query='{ __type(name:"AddLabelsToLabelableInput"){ inputFields{ name } } }'
-# 2. prove the write path end to end
-gh api graphql -f query='{ repository(owner:"castrojo",name:"cncf-feedback"){ id discussionCategories(first:25){ nodes{ id name isAnswerable } } } }'
-# createDiscussion → addLabelsToLabelable(labelableId: <discussion node id>) → closeDiscussion(reason: RESOLVED)
-# 3. prove the App path specifically: repeat step 2 with an installation access token
-#    whose only repo permission is discussions:write, to confirm the undocumented
-#    GraphQL permission mapping (expect 401 on insufficient permission)
-```
+`createDiscussion(repositoryId, categoryId, title, body)` returned a discussion node id; `addLabelsToLabelable(labelableId: <that id>, labelIds: [...])` then returned the discussion with the label attached. Both succeeded. The proposal's label-on-discussion dependency is **proven, not assumed**.
 
-Step 3 is the only one that resolves the genuinely undocumented question in this document: whether `discussions: write` alone is sufficient for `addLabelsToLabelable` on a discussion, or whether `issues: write` is additionally required because labels are a shared repository resource.
+Cleanup: the test discussion was removed with `deleteDiscussion`; the repo's `discussions.totalCount` is back to `0`. Research proof left nothing behind in the product surface.
+
+**Residual gap — the one thing still unverified.**
+
+All of the above ran with a **user PAT**. It does not prove the App path, and GitHub publishes no permission map for GraphQL, so no document can settle it. The open question is whether `discussions: write` alone carries `addLabelsToLabelable`, or whether `issues: write` is additionally required because labels are a shared repository resource.
+
+Tracked as [#14 — Verify discussion label writes with a GitHub App installation token](https://github.com/cncf/feedback-app/issues/14), wired as a blocker of [#3](https://github.com/cncf/feedback-app/issues/3) and of the carrier decision [#6](https://github.com/cncf/feedback-app/issues/6). The test: register a minimal App with `discussions: write` and nothing else, install it, mint an installation token, repeat the create→label sequence, and expect a `401` if the permission is insufficient.
