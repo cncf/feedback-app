@@ -365,6 +365,7 @@ async function run() {
 
   const index = await buildIndex(log);
   const seen = new Set();
+  const failures = [];
 
   // 1. discovery - issues currently carrying the label
   for (const repo of CONFIG.sources) {
@@ -373,7 +374,12 @@ async function run() {
     try {
       issues = await labelledIssues(repo, CONFIG.feedbackLabel);
     } catch (e) {
+      // A source we cannot read is a failed run, not a quiet one. Keep going so
+      // other sources still sync, but the process must exit nonzero - otherwise
+      // a missing installation shows up as a green scheduled run that synced
+      // nothing at all.
       log(`  ERROR reading ${repo}: ${e.message}`);
+      failures.push(`${repo}: ${e.message}`);
       continue;
     }
     log(`  ${issues.length} labelled issue(s)`);
@@ -448,6 +454,11 @@ async function run() {
         log(`  ${res.issue.repo}#${res.issue.number}: label gone -> closed discussion #${rec.number}`);
       }
     }
+  }
+  if (failures.length) {
+    log(`\nFAILED: ${failures.length} source(s) could not be processed`);
+    for (const f of failures) log(`  - ${f}`);
+    process.exit(1);
   }
   log(`\ndone`);
 }
