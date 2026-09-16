@@ -3,7 +3,7 @@ name: sync-feedback
 on:
   schedule:
     # 5-minute floor per GitHub's documented minimum. Delays are expected
-    # under load; reconciliation is idempotent so a skipped run is harmless.
+    # under load; the sync is idempotent so a skipped run is harmless.
     - cron: "*/5 * * * *"
   workflow_dispatch:
 
@@ -24,18 +24,31 @@ jobs:
         with:
           bun-version: latest
 
-      # Cross-repo writes need an App installation token; GITHUB_TOKEN is
-      # scoped to this repository only and cannot create the discussion.
+      # Split identities (decision 14). Two Apps, two installations, two keys —
+      # both custodied here, neither distributed to participating orgs.
+      #
+      # Hub App: discussions:write, installed on the hub org only.
       - uses: actions/create-github-app-token@v3
-        id: app-token
+        id: hub-token
         with:
-          app-id: ${{ vars.FEEDBACK_APP_ID }}
-          private-key: ${{ secrets.FEEDBACK_APP_PRIVATE_KEY }}
+          app-id: ${{ vars.HUB_APP_ID }}
+          private-key: ${{ secrets.HUB_APP_PRIVATE_KEY }}
           owner: cncf
+          repositories: cncf-feedback
+
+      # Source App: issues:read + issues:write, installed by each participating
+      # project on their own org. `owner` omitted deliberately — the token is
+      # minted across every installation the App has.
+      - uses: actions/create-github-app-token@v3
+        id: source-token
+        with:
+          app-id: ${{ vars.SOURCE_APP_ID }}
+          private-key: ${{ secrets.SOURCE_APP_PRIVATE_KEY }}
 
       - name: sync
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_HUB_TOKEN: ${{ steps.hub-token.outputs.token }}
+          GH_SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
         run: bun run src/sync.mjs
 
       - name: commit state
