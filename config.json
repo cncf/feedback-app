@@ -1,0 +1,13 @@
+{
+  "feedbackLabel": "feedback",
+  "hub": {
+    "repo": "cncf/cncf-feedback",
+    "repositoryId": "R_kgDOUd6KpQ",
+    "categoryName": "Announcements",
+    "categoryId": "DIC_kwDOUd6Kpc4DFwg7"
+  },
+  "sources": [
+    "cncf/feedback-app"
+  ],
+  "statePath": "state/synced.json"
+}

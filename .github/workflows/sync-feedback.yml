@@ -1,0 +1,51 @@
+name: sync-feedback
+
+on:
+  schedule:
+    # 5-minute floor per GitHub's documented minimum. Delays are expected
+    # under load; reconciliation is idempotent so a skipped run is harmless.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-feedback
+  cancel-in-progress: false
+
+permissions:
+  contents: write # commit the state file
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # Cross-repo writes need an App installation token; GITHUB_TOKEN is
+      # scoped to this repository only and cannot create the discussion.
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          app-id: ${{ vars.FEEDBACK_APP_ID }}
+          private-key: ${{ secrets.FEEDBACK_APP_PRIVATE_KEY }}
+          owner: cncf
+
+      - name: sync
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bun run src/sync.mjs
+
+      - name: commit state
+        run: |
+          if [[ -n "$(git status --porcelain state/)" ]]; then
+            git config user.name  "cncf-feedback[bot]"
+            git config user.email "cncf-feedback[bot]@users.noreply.github.com"
+            git add state/
+            git commit -m "chore(state): sync $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push
+          else
+            echo "no state change"
+          fi
