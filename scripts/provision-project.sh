@@ -42,9 +42,11 @@ for P in "$@"; do
 
   # Actions is a separate API and is ON by default. A feedback repo has no code
   # to build, so a workflow here is only an attack surface.
-  gh api --method PUT "repos/$ORG/$P/actions/permissions" -F enabled=false \
-    && echo "  actions disabled" \
-    || echo "  WARN: could not disable Actions (needs admin)"
+  if ! gh api --method PUT "repos/$ORG/$P/actions/permissions" -F enabled=false >/dev/null 2>&1; then
+    echo "  FATAL: could not disable Actions (needs admin)" >&2
+    fail=1
+    continue
+  fi
 
   # NOT settable: public forking. `allow_forking` controls PRIVATE forks only
   # ("Either true to allow private forks, or false to prevent private forks").
@@ -65,6 +67,16 @@ for P in "$@"; do
     fail=1
     continue
   fi
+
+  # Actions lives behind its own endpoint, so verify it separately or a failed
+  # PUT leaves a repo that reports fully locked down and is not.
+  actions=$(gh api "repos/$ORG/$P/actions/permissions" --jq '.enabled' 2>/dev/null || echo "unknown")
+  if [[ "$actions" != "false" ]]; then
+    echo "  FATAL: Actions still enabled (enabled=$actions)" >&2
+    fail=1
+    continue
+  fi
+  echo "  verified: discussions only, actions disabled"
 
   # Category format cannot be read from the API, only its name and answerability.
   # `Announcements` ships as announcement-format on every new repo, which is what

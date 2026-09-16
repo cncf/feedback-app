@@ -63,7 +63,10 @@ jobs:
           app-id: ${{ vars.HUB_APP_ID }}
           private-key: ${{ secrets.HUB_APP_PRIVATE_KEY }}
           owner: cncf-projects
-          repositories: cert-manager
+          # Deliberately no `repositories`: the token must cover every hub repo
+          # in the org, and the set grows as projects are onboarded. Pinning it
+          # to one repo means a newly onboarded project silently fails its hub
+          # writes.
 
       # Source App: issues:read + issues:write, installed by each participating
       # project on their own org.
