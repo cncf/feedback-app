@@ -50,12 +50,13 @@ maintainer labels an issue
         |
    scheduled poll (5 min)
         |
-   create discussion in hub, announcement-format category
+   create discussion in hub, routed by group label to its category
         |
    +-- comment on discussion  -> links to the issue
    +-- comment on the issue   -> links to the discussion   (once, never updated)
         |
    issue edited      -> mirror block + title to the discussion
+   labels changed    -> mirror prefixed labels, stripped, to the discussion
    label removed     -> close discussion (OUTDATED)
    label re-added    -> reopen the SAME discussion
 ```
@@ -92,6 +93,61 @@ edits elsewhere never churn the discussion.
 
 Title changes mirror too. The title is copied at creation, so leaving it frozen
 would advertise a stale name forever.
+
+### Labels mirror, prefix-stripped
+
+`labelPrefixes` in `config.json` selects which source labels cross over. The
+prefix is maintainer vocabulary and is dropped on the way: `area/api` becomes
+`api`.
+
+Unprefixed labels never mirror. `lgtm`, `needs-rebase`, `do-not-merge/hold` and
+the feedback label itself are process signals, and publishing them on the
+end-user surface is the implementation noise the hub exists to keep out. An
+empty `labelPrefixes` disables the path entirely, including its label queries.
+
+**The hub label must already exist in the hub repo.** Labels are per-repo and
+`addLabelsToLabelable` takes ids, not names — there is no create-if-missing.
+A missing one is reported once per run and skipped. The sync does not call
+`createLabel`: label creation is a repository-shaped write, and the hub App
+holds `discussions: write` precisely so it cannot reshape the repo.
+
+Removal converges too, but only within the **vocabulary**: every hub name that
+source repo's labels could produce. Once the prefix is stripped, a label the
+sync applied and one a moderator applied by hand are indistinguishable on the
+discussion, so the vocabulary is the only thing that separates them. A
+hand-added `pinned` survives; a mirrored `api` whose `area/api` is gone does not.
+
+Labels move in the discovery phase only. Reconciliation closes a discussion
+whose label is gone; it does not strip the mirrored labels off it, because the
+closed thread should still say what it was about.
+
+Verified by execution that `discussions: write` alone carries both
+`addLabelsToLabelable` and `removeLabelsFromLabelable` — see
+`github-discussions-api.md`. No `issues` permission is involved, even though
+labels are a shared repository resource.
+
+### Category routing by group label
+
+A project may declare `routes`: an ordered list of `{label, categoryName,
+categoryId}`. An issue whose labels include `label` lands in that category;
+no match falls back to the project's default `hub.categoryId`; no `routes` at
+all is exactly the old single-category behaviour. This is the
+kubernetes/enhancements shape — one source repo, one `feedback` label, per-SIG
+categories so end users hone in on their group.
+
+**Config order is the priority.** Multi-group issues are the norm there, not
+the edge (`sig/network` + `sig/node` on one KEP), and the owning group is not
+derivable from labels — kubernetes keeps it in `kep.yaml`. First matching route
+wins and the run says so: `(matches sig/network + sig/node; config order wins)`.
+
+**Routing follows the label.** Swap the group label and the *same* discussion
+moves category via `updateDiscussion(categoryId)` — verified by execution;
+thread and comments survive. Announcements cannot move between *repositories*,
+but category-within-repo is fine.
+
+The index trusts markers in **any configured category** (default plus routes),
+and only those. Each routed category should be announcement-format, and that
+cannot be read from the API — verify each one in the UI.
 
 ### Label-only lifecycle
 
@@ -188,8 +244,8 @@ durable and enumerable.
 The marker is public text. Anyone can paste it into a discussion they open.
 Adoption therefore requires **both**:
 
-1. the discussion is in the configured category — restricted, so only
-   maintainers and the App can post there
+1. the discussion is in a configured category (default or route) — restricted,
+   so only maintainers and the App can post there
 2. it was authored by us
 
 Backlink markers are **keyed to the specific issue or discussion** and
@@ -226,6 +282,8 @@ aborts rather than trusting everything. Normalise `[bot]` before comparing —
 | "The marker proves it's our discussion." | The marker is public text. Category and author must both check out. |
 | "Mirror the feedback back to the issue." | That recreates the noise the hub exists to remove, plus attribution and deletion problems. |
 | "Text outside the block is private." | It is public in the issue. The markers curate; they do not conceal. |
+| "Mirror all the issue's labels." | Triage vocabulary is for maintainers. End users get the prefixed subset, stripped. |
+| "Create the label in the hub if it's missing." | That is a repo-shaped write the hub App deliberately cannot make. Report it and skip. |
 
 ## Red Flags
 
@@ -234,6 +292,7 @@ aborts rather than trusting everything. Normalise `[bot]` before comparing —
 - Comment scanning with a fixed window used for idempotency
 - A provenance check that passes when identity is unknown
 - Writes into source repos beyond the single backlink comment
+- Label writes on a discussion outside the mirrored vocabulary
 - "Private" or "hidden" used to describe marker-excluded text
 
 ## Verification
@@ -242,6 +301,10 @@ aborts rather than trusting everything. Normalise `[bot]` before comparing —
 - [ ] State deleted entirely → index rebuilds, adopts, posts nothing
 - [ ] Unlabel closes, relabel reopens the same discussion
 - [ ] Block edit and title edit both mirror
+- [ ] Group label swapped → same discussion moves to the routed category
+- [ ] Prefixed label added and removed on the issue → mirrored and retracted
+- [ ] A label applied by hand in the hub survives a source-side removal
+- [ ] Marker in an unconfigured category → ignored, logged
 - [ ] Markers removed → refuses to overwrite, warns
 - [ ] Marker planted in an open category → ignored, logged
 - [ ] Unreadable source → nonzero exit

@@ -13,7 +13,7 @@ December 2025 with nothing shipped. This repo is the revival.
 | Path | What |
 |---|---|
 | `src/sync.mjs` | the sync engine |
-| `config.json` | hub target, label, source repos, bot logins |
+| `config.json` | hub target, label, label prefixes, category routes, source repos, bot logins |
 | `.github/workflows/sync-feedback.yml` | 5-minute poll, guarded on credentials |
 | `docs/skills/` | **start here** — how it works and how to run it |
 | `docs/research/` | primary-source findings behind the design |

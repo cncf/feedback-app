@@ -1,5 +1,6 @@
 {
   "feedbackLabel": "feedback",
+  "labelPrefixes": ["area/", "kind/"],
   "hubOrg": "cncf-projects",
   "hubBotLogin": "cncf-feedback[bot]",
   "sourceBotLogin": null,
@@ -35,5 +36,5 @@
       }
     }
   ],
-  "_note": "Each project routes its own source repos to its own hub repo. `sources` empty means provisioned but not yet syncing - the project has not installed the source App. hubBotLogin is only consulted when `viewer` cannot be resolved."
+  "_note": "Each project routes its own source repos to its own hub repo. `sources` empty means provisioned but not yet syncing - the project has not installed the source App. hubBotLogin is only consulted when `viewer` cannot be resolved. labelPrefixes selects which source labels mirror onto the discussion; the prefix is maintainer vocabulary and is stripped, so `area/api` becomes `api`, which must already exist as a label in the hub repo. Empty disables label mirroring. `routes` (optional, per project) is an ordered list of {label, categoryName, categoryId}: an issue carrying `label` lands in that category, first match in config order wins, no match falls back to hub.categoryId."
 }

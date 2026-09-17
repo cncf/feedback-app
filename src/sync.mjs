@@ -4,8 +4,9 @@
  *
  * A maintainer labels an issue in a participating project repo; a discussion
  * appears in the hub; both sides get a backlink. Editing the issue's shared
- * block mirrors to the discussion. Removing the label closes the discussion;
- * re-adding it reopens the same one.
+ * block mirrors to the discussion, as do its prefixed labels, stripped of the
+ * prefix. Removing the label closes the discussion; re-adding it reopens the
+ * same one.
  *
  * Content flows one way. The only write into a project repo is the backlink
  * comment, posted once and never updated.
@@ -54,7 +55,6 @@ const HUB_TOKEN = process.env.GH_HUB_TOKEN || process.env.GH_TOKEN || process.en
 const SOURCE_APP_ID = process.env.SOURCE_APP_ID;
 const SOURCE_APP_KEY = process.env.SOURCE_APP_PRIVATE_KEY;
 const FALLBACK = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
-if (!HUB_TOKEN) throw new Error("need GH_HUB_TOKEN (or GH_TOKEN for local runs)");
 const appMode = !!(SOURCE_APP_ID && SOURCE_APP_KEY);
 
 function appJwt() {
@@ -228,13 +228,15 @@ const discussionBody = (block, issue, bl = "") =>
 // ----------------------------------------------------------------- index
 
 /**
- * Rebuild issue -> discussion from the hub itself. Only discussions in the
- * configured category and authored by us are trusted: the marker is public
- * text, so anyone could paste it into an open category to hijack adoption.
+ * Rebuild issue -> discussion from the hub itself. Only discussions in a
+ * configured category (default or route) and authored by us are trusted: the
+ * marker is public text, so anyone could paste it into an open category to
+ * hijack adoption.
  */
 async function buildIndex(project, log) {
   const us = await hubIdentity();
   const [owner, name] = project.hub.repo.split("/");
+  const cats = configuredCategories(project);
   const index = new Map();
   let cursor = null,
     page = 0,
@@ -245,7 +247,7 @@ async function buildIndex(project, log) {
       `query($o:String!,$n:String!,$c:String){ repository(owner:$o,name:$n){
         discussions(first:100,after:$c){
           pageInfo{ hasNextPage endCursor }
-          nodes{ id number title url closed body author{ login } category{ id name } }
+          nodes{ id number title url closed body author{ login } category{ id name } labels(first:50){ nodes{ id name } } }
         }
       }}`,
       { o: owner, n: name, c: cursor }
@@ -255,7 +257,7 @@ async function buildIndex(project, log) {
     for (const n of conn.nodes) {
       const m = n.body?.match(MARKER_RE);
       if (!m) continue;
-      if (n.category?.id !== project.hub.categoryId) {
+      if (!cats.has(n.category?.id)) {
         rejected++;
         log(`  ignoring #${n.number}: marker in category "${n.category?.name}"`);
         continue;
@@ -274,7 +276,9 @@ async function buildIndex(project, log) {
         title: n.title,
         url: n.url,
         closed: n.closed,
+        category: n.category.id,
         block: blockFromDiscussion(n.body),
+        labels: n.labels.nodes,
       });
     }
     if (!conn.pageInfo.hasNextPage) break;
@@ -284,6 +288,26 @@ async function buildIndex(project, log) {
   return index;
 }
 
+// --------------------------------------------------------------- routing
+
+/**
+ * Which category this issue's discussion belongs in. Routes match on exact
+ * label name; first match in config order wins - order IS the priority, and
+ * the only tie-break available: the owning group is not derivable from labels
+ * (kubernetes keeps it in kep.yaml, not on the issue). No matching label falls
+ * back to the project's default category, and no routes at all reproduces the
+ * old single-category behaviour exactly.
+ */
+export function categoryFor(project, issueLabels) {
+  const hits = (project.routes ?? []).filter((r) => issueLabels.includes(r.label));
+  const t = hits[0] ?? project.hub;
+  return { categoryId: t.categoryId, categoryName: t.categoryName, ambiguous: hits.length > 1 ? hits.map((r) => r.label) : null };
+}
+
+/** Every category the config claims. The index trusts markers in any of them - and only them. */
+export const configuredCategories = (project) =>
+  new Set([project.hub.categoryId, ...(project.routes ?? []).map((r) => r.categoryId)]);
+
 // -------------------------------------------------------------- queries
 
 async function labelledIssues(repo, label) {
@@ -292,12 +316,12 @@ async function labelledIssues(repo, label) {
     owner,
     `query($o:String!,$n:String!,$l:String!){ repository(owner:$o,name:$n){
       issues(first:100,states:OPEN,labels:[$l],orderBy:{field:UPDATED_AT,direction:DESC}){
-        nodes{ id number title body url }
+        nodes{ id number title body url labels(first:50){ nodes{ name } } }
       }
     }}`,
     { o: owner, n: name, l: label }
   );
-  return d.repository.issues.nodes.map((n) => ({ ...n, repo }));
+  return d.repository.issues.nodes.map((n) => ({ ...n, repo, labels: n.labels.nodes.map((l) => l.name) }));
 }
 
 /** {ok,issue} - never conflates "cannot see it" with "label removed". */
@@ -328,14 +352,14 @@ async function issueById(id, owner) {
 
 // ------------------------------------------------------------ mutations
 
-const createDiscussion = (project, t, b) =>
+const createDiscussion = (project, catId, t, b) =>
   hub(
     `mutation($r:ID!,$c:ID!,$t:String!,$b:String!){ createDiscussion(input:{repositoryId:$r,categoryId:$c,title:$t,body:$b}){ discussion{ id number url } } }`,
-    { r: project.hub.repositoryId, c: project.hub.categoryId, t, b }
+    { r: project.hub.repositoryId, c: catId, t, b }
   ).then((d) => d.createDiscussion.discussion);
 
-const updateDiscussion = (id, t, b) =>
-  hub(`mutation($id:ID!,$t:String!,$b:String!){ updateDiscussion(input:{discussionId:$id,title:$t,body:$b}){ discussion{ id } } }`, { id, t, b });
+const updateDiscussion = (id, t, b, c) =>
+  hub(`mutation($id:ID!,$t:String!,$b:String!,$c:ID!){ updateDiscussion(input:{discussionId:$id,title:$t,body:$b,categoryId:$c}){ discussion{ id } } }`, { id, t, b, c });
 
 const closeDiscussion = (id) =>
   hub(`mutation($id:ID!){ closeDiscussion(input:{discussionId:$id,reason:OUTDATED}){ discussion{ closed } } }`, { id });
@@ -391,7 +415,7 @@ async function backlinkExists(kind, hostId, mark, expectedAuthor, useSrc, owner)
 async function ensureBacklinks(issue, rec, block, log) {
   const owner = issue.repo.split("/")[0];
   const persist = async (bl) => {
-    await updateDiscussion(rec.discussionId, issue.title, discussionBody(block, issue, bl));
+    await updateDiscussion(rec.discussionId, issue.title, discussionBody(block, issue, bl), rec.category);
     rec.bl = bl;
   };
 
@@ -431,10 +455,114 @@ async function ensureBacklinks(issue, rec, block, log) {
   }
 }
 
+// ----------------------------------------------------------------- labels
+// Maintainer label vocabulary is prefixed (`area/`, `kind/`); end users see the
+// bare term. Only prefixed labels cross over, because the unprefixed ones are
+// process labels - lgtm, needs-rebase, do-not-merge/hold - and publishing those
+// on the end-user surface is exactly the implementation noise the hub exists to
+// keep out.
+
+const PREFIXES = CONFIG.labelPrefixes ?? [];
+
+/** Hub name for a source label, or null when it is not ours to mirror. */
+export function stripPrefix(name, prefixes) {
+  const p = prefixes.find((p) => name.length > p.length && name.startsWith(p));
+  return p ? name.slice(p.length) : null;
+}
+
+/**
+ * What to add, and what to retract. `vocab` is every hub name this source repo
+ * COULD produce, and is the only way to tell a label the sync put there from
+ * one a hub moderator added by hand: once the prefix is stripped the two are
+ * indistinguishable on the discussion. Anything outside the vocabulary is
+ * therefore left alone - hub-side curation survives a source-side removal.
+ */
+export function planLabels(issueLabels, discussionLabels, vocab, prefixes) {
+  const want = new Set(issueLabels.map((n) => stripPrefix(n, prefixes)).filter(Boolean));
+  const have = new Set(discussionLabels.map((l) => l.name));
+  return {
+    add: [...want].filter((n) => !have.has(n)),
+    remove: discussionLabels.filter((l) => vocab.has(l.name) && !want.has(l.name)),
+  };
+}
+
+// ponytail: one page of labels per repo. A repo with more than 100 would lose
+// the tail silently, so the count is checked and reported rather than paginated
+// for a case no CNCF repo is near.
+async function repoLabels(repo, gql, log) {
+  const [o, n] = repo.split("/");
+  const d = await gql(`query($o:String!,$n:String!){ repository(owner:$o,name:$n){ labels(first:100){ totalCount nodes{ id name } } }}`, { o, n });
+  const { totalCount, nodes } = d.repository.labels;
+  if (totalCount > nodes.length) log(`  WARNING: ${repo} has ${totalCount} labels; only the first ${nodes.length} are considered`);
+  return nodes;
+}
+
+const hubLabelCache = new Map();
+/** name -> id in the hub repo. Labels are per-repo, so a mirrored name that was never created there cannot be applied. */
+async function hubLabelIds(repo, log) {
+  if (!hubLabelCache.has(repo)) {
+    hubLabelCache.set(repo, new Map((await repoLabels(repo, hub, log)).map((l) => [l.name, l.id])));
+  }
+  return hubLabelCache.get(repo);
+}
+
+const vocabCache = new Map();
+async function vocabularyFor(repo, log) {
+  if (!vocabCache.has(repo)) {
+    const owner = repo.split("/")[0];
+    const names = await repoLabels(repo, (q, v) => src(owner, q, v), log);
+    vocabCache.set(repo, new Set(names.map((l) => stripPrefix(l.name, PREFIXES)).filter(Boolean)));
+  }
+  return vocabCache.get(repo);
+}
+
+// Once per run, not once per issue: an unmirrorable label is a standing
+// condition, and repeating it per issue drowns the lines that report work.
+const warned = new Set();
+
+async function syncLabels(project, issue, rec, vocab, log) {
+  const { add, remove } = planLabels(issue.labels, rec.labels, vocab, PREFIXES);
+  if (!add.length && !remove.length) return;
+
+  const ids = await hubLabelIds(project.hub.repo, log);
+  const wanted = [];
+  for (const name of add) {
+    const id = ids.get(name);
+    if (id) wanted.push({ name, id });
+    else if (!warned.has(name)) {
+      warned.add(name);
+      log(`    label "${name}" is not in ${project.hub.repo} - create it there to mirror it`);
+    }
+  }
+
+  const names = (ls) => ls.map((l) => l.name).join(" ");
+  if (wanted.length) {
+    if (DRY) log(`    would label #${rec.number}: +${names(wanted)}`);
+    else {
+      await addLabels(rec.discussionId, wanted.map((l) => l.id));
+      log(`    labelled #${rec.number}: +${names(wanted)}`);
+    }
+  }
+  if (remove.length) {
+    if (DRY) log(`    would unlabel #${rec.number}: -${names(remove)}`);
+    else {
+      await removeLabels(rec.discussionId, remove.map((l) => l.id));
+      log(`    unlabelled #${rec.number}: -${names(remove)}`);
+    }
+  }
+}
+
+const addLabels = (id, l) =>
+  hub(`mutation($id:ID!,$l:[ID!]!){ addLabelsToLabelable(input:{labelableId:$id,labelIds:$l}){ clientMutationId } }`, { id, l });
+
+const removeLabels = (id, l) =>
+  hub(`mutation($id:ID!,$l:[ID!]!){ removeLabelsFromLabelable(input:{labelableId:$id,labelIds:$l}){ clientMutationId } }`, { id, l });
+
 // ------------------------------------------------------------------ run
 
 async function run() {
   const log = console.log;
+  if (!HUB_TOKEN) throw new Error("need GH_HUB_TOKEN (or GH_TOKEN for local runs)");
   log(appMode ? "auth: hub token + source App (per-installation tokens)" : "auth: single token - LOCAL TESTING ONLY");
   log(`label: ${CONFIG.feedbackLabel}${DRY ? "  (DRY RUN)" : ""}`);
 
@@ -453,9 +581,10 @@ async function run() {
     const seen = new Set();
 
     for (const repo of project.sources) {
-      let issues;
+      let issues, vocab;
       try {
         issues = await labelledIssues(repo, CONFIG.feedbackLabel);
+        vocab = PREFIXES.length ? await vocabularyFor(repo, log) : null;
       } catch (e) {
         log(`  ERROR reading ${repo}: ${e.message}`);
         failures.push(`${project.name}/${repo}: ${e.message}`);
@@ -473,12 +602,15 @@ async function run() {
           continue;
         }
 
+        const cat = categoryFor(project, issue.labels);
+        const note = cat.ambiguous ? ` (matches ${cat.ambiguous.join(" + ")}; config order wins)` : "";
+
         if (!rec) {
-          if (DRY) { log(`    would create discussion: "${issue.title}"`); continue; }
-          const d = await createDiscussion(project, issue.title, discussionBody(block, issue));
-          rec = { discussionId: d.id, number: d.number, title: issue.title, url: d.url, closed: false, block, bl: "" };
+          if (DRY) { log(`    would create discussion: "${issue.title}" [${cat.categoryName}]${note}`); continue; }
+          const d = await createDiscussion(project, cat.categoryId, issue.title, discussionBody(block, issue));
+          rec = { discussionId: d.id, number: d.number, title: issue.title, url: d.url, closed: false, block, bl: "", labels: [], category: cat.categoryId };
           index.set(issue.id, rec);
-          log(`    created discussion #${d.number} -> ${d.url}`);
+          log(`    created discussion #${d.number} [${cat.categoryName}] -> ${d.url}${note}`);
         } else if (rec.closed) {
           if (!DRY) await reopenDiscussion(rec.discussionId);
           rec.closed = false;
@@ -486,18 +618,21 @@ async function run() {
         }
 
         const titleChanged = rec.title !== undefined && rec.title !== issue.title;
-        if (rec.block !== block || titleChanged) {
-          const what = [rec.block !== block && "body", titleChanged && "title"].filter(Boolean).join("+");
-          if (DRY) log(`    would mirror ${what} -> #${rec.number}`);
+        const catChanged = rec.category !== cat.categoryId;
+        if (rec.block !== block || titleChanged || catChanged) {
+          const what = [rec.block !== block && "body", titleChanged && "title", catChanged && `category->"${cat.categoryName}"`].filter(Boolean).join("+");
+          if (DRY) log(`    would mirror ${what} -> #${rec.number}${catChanged ? note : ""}`);
           else {
-            await updateDiscussion(rec.discussionId, issue.title, discussionBody(block, issue, rec.bl || ""));
-            log(`    mirrored ${what} -> discussion #${rec.number}`);
+            await updateDiscussion(rec.discussionId, issue.title, discussionBody(block, issue, rec.bl || ""), cat.categoryId);
+            log(`    mirrored ${what} -> discussion #${rec.number}${catChanged ? note : ""}`);
           }
           rec.block = block;
           rec.title = issue.title;
+          rec.category = cat.categoryId;
         }
 
         await ensureBacklinks(issue, rec, block, log);
+        if (vocab) await syncLabels(project, issue, rec, vocab, log);
       }
     }
 
