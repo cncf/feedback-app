@@ -31,7 +31,7 @@ metadata:
 |---|---|---|
 | Sync engine | `cncf/feedback-app` · `src/sync.mjs` | Bun, no dependencies |
 | Schedule | `.github/workflows/sync-feedback.yml` | 5-minute cron + `workflow_dispatch` |
-| Config | `config.json` | hub target, label, source repos, bot logins |
+| Config | `config.json` | hub target, label, label prefixes, source repos, bot logins |
 | Hub | `cncf-projects/<project>` | Discussions on, Issues/Wiki/Projects off |
 | Hub App | `discussions: write`, `metadata: read` | installed on the hub org |
 | Source App | `issues: write`, `metadata: read` | installed by each participating project |
@@ -46,6 +46,7 @@ source repos map to that project's own hub repo.
 ```json
 {
   "feedbackLabel": "feedback",
+  "labelPrefixes": ["area/", "kind/"],
   "hubOrg": "cncf-projects",
   "hubBotLogin": "cncf-feedback[bot]",
   "sourceBotLogin": "cncf-feedback-source[bot]",
@@ -58,7 +59,11 @@ source repos map to that project's own hub repo.
         "repositoryId": "R_...",
         "categoryName": "Announcements",
         "categoryId": "DIC_..."
-      }
+      },
+      "routes": [
+        { "label": "sig/network", "categoryName": "Network", "categoryId": "DIC_..." },
+        { "label": "sig/node",    "categoryName": "Node",    "categoryId": "DIC_..." }
+      ]
     }
   ]
 }
@@ -68,6 +73,16 @@ source repos map to that project's own hub repo.
 exists and is locked down, but the project has not installed the source App yet.
 The run reports these as skipped rather than treating them as errors, so a
 half-onboarded project is visible without being noisy.
+
+### Label mirroring
+
+`labelPrefixes` selects which source labels reach the discussion. The prefix is
+stripped, so `area/api` arrives as `api` and must **already exist as a label in
+the hub repo** — the sync never creates labels there. Unprefixed labels never
+mirror. `[]` turns the feature off.
+
+Removals converge within the mirrored vocabulary only, so labels a moderator
+adds in the hub are safe. Full rationale in `feedback-sync-architecture.md`.
 
 Resolve IDs with the user credential, never with the App token:
 
@@ -80,6 +95,15 @@ gh api graphql -f query='{repository(owner:"OWNER",name:"REPO"){
 `botLogin` is only consulted when `viewer` cannot be resolved. The sync prefers
 what the token actually is, so local user-token runs still work with bot logins
 configured.
+
+### Category routing
+
+`routes` (optional, per project) sends an issue to a category by its group
+label — the kubernetes/enhancements pattern: poll one `feedback` label, route
+by `sig/*`. First match in config order wins on multi-group issues, so order
+the routes by priority. No match falls back to `hub.categoryId`. Swapping the
+group label moves the same discussion to the new category. Every routed
+category needs the same announcement-format check as the default one.
 
 ### Category format cannot be read from the API
 
@@ -119,7 +143,9 @@ five minutes teaches people to ignore failures.
 4. Have the project install the **source App** on their org.
 5. Add their repo to `sources` in `config.json`.
 6. Create the feedback label in their repo.
-7. Give maintainers the issue template carrying the marker block.
+7. Create the hub-side labels for the prefixes you expect (`area/api` in the
+   source needs `api` in the hub). Missing ones are logged, not created.
+8. Give maintainers the issue template carrying the marker block.
 
 Provisioning should be a script, not a procedure. A manual setup that takes an
 afternoon per project does not survive contact with many projects.
@@ -148,6 +174,8 @@ source cncf/feedback-app
   created discussion #14 -> <url>
   backlink -> discussion / -> issue
   mirrored body+title -> discussion #11
+  labelled #14: +api bug                 prefixed source labels, stripped
+  label "gateway" is not in ...          create it in the hub, or it stays off
 reconciling 12 tracked discussion(s)
   #7: issue not visible (...) - leaving discussion untouched
   cncf/x#3: label gone -> closed discussion #8
@@ -165,6 +193,11 @@ reconciling 12 tracked discussion(s)
 | `ignoring #N: authored by @someone` | someone planted a marker | expected; the rejection is the feature |
 | Nothing happens, exit 0 | no labelled issues | confirm the label name matches `feedback-app` config exactly |
 | Backfill stalls | content-generating limit (80/min, 500/hr) | throttle seeding; reads are not the problem |
+| Discussion in the wrong category | issue carries several route labels | order `routes` by priority; the run logs which matched |
+| Discussion didn't move after relabel | old and new label hit the same route, or no route matches | check `routes`; no match means default category |
+| `label "X" is not in <hub repo>` | the stripped name has no label there | create it in the hub repo, or ignore it |
+| Labels never mirror | `labelPrefixes` empty, or the source labels are unprefixed | check the prefixes match the project's label scheme |
+| A hub-only label keeps vanishing | its name collides with the source vocabulary | rename it, or drop the prefix that produces it |
 
 ## Rotation and revocation
 
@@ -197,6 +230,9 @@ reconciling 12 tracked discussion(s)
 - [ ] A real run creates a discussion **authored by the App**
 - [ ] Second run posts nothing
 - [ ] Unlabel closes; relabel reopens the same discussion
+- [ ] Swapping the group label moves the discussion, same thread intact
+- [ ] A prefixed label added then removed on the issue mirrors, then retracts
+- [ ] A label applied by hand on the discussion survives the next run
 - [ ] Removing a credential makes the workflow skip, not fail
 - [ ] An uninstalled source produces a nonzero exit, not a silent success
 - [ ] No test discussions or comments left behind
